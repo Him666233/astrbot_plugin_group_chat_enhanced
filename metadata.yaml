@@ -1,0 +1,28 @@
+name: astrbot_plugin_group_chat_enhanced
+description: 增强版群聊插件：基于 astrbot_plugin_group_chat 和 astrbot_plugin_reply_directly 二次创作，融合了沉浸式对话和主动插话功能，提供更智能的群聊交互体验。
+version: 2.0.0
+author: Him666233
+repo: https://github.com/Him666233/astrbot_plugin_group_chat_enhanced
+license: AGPL-3.0
+
+credits:
+  - name: astrbot_plugin_group_chat
+    author: qa296
+    repository: https://github.com/qa296/astrbot_plugin_group_chat
+  - name: astrbot_plugin_reply_directly
+    author: qa296
+    repository: https://github.com/qa296/astrbot_plugin_reply_directly
+
+compatibility:
+  astrbot: ">=4.3.5"
+  python: ">=3.10"
+features:
+  - 智能群聊回复
+  - 沉浸式对话功能
+  - 主动插话功能
+  - 读空气功能
+  - 疲劳系统
+  - 专注聊天
+  - 印象系统
+  - 记忆集成
+  - 状态管理

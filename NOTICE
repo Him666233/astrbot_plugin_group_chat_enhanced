@@ -1,0 +1,16 @@
+# 版权与来源说明
+
+本项目 (`astrbot_plugin_group_chat_enhanced`) 的开发参考并使用了以下开源项目的代码与设计思路，特此致谢：
+
+## 致谢项目
+- **astrbot_plugin_group_chat**
+  - 作者: qa296
+  - 说明: 虽未明确声明，但作为同一AGPL-3.0平台下的插件，本项目出于尊重，视其遵循相同的开源精神。
+- **astrbot_plugin_reply_directly**
+  - 作者: qa296
+  - 许可证: GNU Affero General Public License v3.0 (AGPL-3.0)
+
+## 关于本项目
+- **当前开发者**: Him666233
+- **项目性质**: 在以上项目基础上的二次创作与功能融合。大部分代码为解决兼容性和新增功能而重写。
+- **许可证**: 作为衍生作品，本项目整体遵循 **GNU Affero General Public License v3.0 (AGPL-3.0)** 发布。

@@ -1,0 +1,233 @@
+{
+  "enable_plugin": {
+    "description": "插件总开关",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后，此插件所有功能都将失效。建议在调试或临时禁用插件时使用。"
+  },
+  "enable_immersive_chat": {
+    "description": "启用沉浸式对话功能",
+    "type": "bool",
+    "default": true,
+    "hint": "机器人回复某用户后，会限时等待该用户的下一条消息，并交由LLM判断是否跟进回复。这会让对话更连贯自然，避免机器人回复后立即结束对话。"
+  },
+  "immersive_chat_timeout": {
+    "description": "沉浸式对话等待超时（秒）",
+    "type": "int",
+    "default": 120,
+    "hint": "在机器人回复后，需要等待用户多久。超过这个时间，沉浸式对话状态将自动失效。建议设置在60-300秒之间，太短可能导致对话中断，太长可能占用过多资源。"
+  },
+  "enable_proactive_reply": {
+    "description": "启用主动插话功能",
+    "type": "bool",
+    "default": true,
+    "hint": "允许机器人在发言后，根据后续的聊天内容判断是否主动插话。开启后机器人会更有参与感，但可能增加回复频率。"
+  },
+  "proactive_reply_delay": {
+    "description": "主动插话延迟时间（秒）",
+    "type": "int",
+    "default": 8,
+    "hint": "机器人在群内发言后，等待多少秒再收集聊天记录进行判断。建议设置在5-30秒之间，太短可能打断对话节奏，太长可能错过插话时机。"
+  },
+  "list_mode": {
+    "description": "名单模式：blacklist（黑名单模式）或 whitelist（白名单模式）",
+    "type": "string",
+    "options": ["blacklist", "whitelist"],
+    "default": "blacklist",
+    "hint": "blacklist模式：在名单中的群组将禁用插件功能；whitelist模式：只有在名单中的群组才会启用插件功能。"
+  },
+  "groups": {
+    "description": "群组名单列表",
+    "type": "list",
+    "default": [],
+    "hint": "根据list_mode设置，填写需要禁用或启用的群组ID列表。格式为字符串数组，例如：[\"123456789\", \"987654321\"]"
+  },
+  "base_probability": {
+    "description": "基础回复概率",
+    "type": "float",
+    "default": 0.3,
+    "hint": "机器人回复的基础概率值，范围0-1。值越高机器人越容易回复，但可能显得过于活跃。建议设置在0.1-0.5之间。"
+  },
+  "willingness_threshold": {
+    "description": "回复意愿阈值",
+    "type": "float",
+    "default": 0.5,
+    "hint": "机器人决定是否回复的阈值，范围0-1。当计算出的回复意愿超过此值时才会回复。值越高机器人越谨慎，回复频率越低。"
+  },
+  "max_consecutive_responses": {
+    "description": "最大连续回复次数",
+    "type": "int",
+    "default": 3,
+    "hint": "机器人在同一对话中最多连续回复的次数。超过此限制后，机器人会暂时停止回复，避免刷屏。建议设置在2-5次之间。"
+  },
+  "focus_chat_enabled": {
+    "description": "是否启用专注聊天",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，当用户与机器人进行深入对话时，机器人会优先回复该用户，提供更专注的对话体验。"
+  },
+  "min_interest_score": {
+    "description": "最小兴趣度分数",
+    "type": "float",
+    "default": 0.6,
+    "hint": "触发专注聊天的兴趣度阈值，范围0-1。值越高表示需要更强的兴趣才会进入专注聊天模式。"
+  },
+  "focus_timeout_seconds": {
+    "description": "专注聊天超时时间（秒）",
+    "type": "int",
+    "default": 300,
+    "hint": "专注聊天模式的最大持续时间。超过此时间后，专注聊天状态会自动结束，避免长时间占用对话资源。"
+  },
+  "focus_max_responses": {
+    "description": "专注聊天最大回复次数",
+    "type": "int",
+    "default": 10,
+    "hint": "在专注聊天模式下，机器人最多回复的次数。达到此限制后专注聊天会自动结束。"
+  },
+  "fatigue_enabled": {
+    "description": "是否启用疲劳系统",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，机器人会根据对话频率自动调整回复意愿，避免过度活跃。有助于控制机器人的回复节奏。"
+  },
+  "fatigue_threshold": {
+    "description": "疲劳阈值",
+    "type": "int",
+    "default": 5,
+    "hint": "触发疲劳状态的对话次数阈值。当短时间内回复次数达到此值时，机器人会进入疲劳状态，降低回复频率。"
+  },
+  "memory_enabled": {
+    "description": "是否启用记忆系统（需要安装 astrbot_plugin_memora_connect 插件）",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，机器人可以回忆之前的对话内容，提供更连贯的对话体验。需要额外安装记忆插件才能正常工作。"
+  },
+  "max_memories_recall": {
+    "description": "最大回忆记忆数量",
+    "type": "int",
+    "default": 10,
+    "hint": "每次对话时最多回忆的记忆数量。值越大回忆的内容越多，但可能增加响应时间。建议设置在5-20之间。"
+  },
+  "impression_enabled": {
+    "description": "是否启用印象系统（需要安装 astrbot_plugin_memora_connect 插件）",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，机器人会根据对话内容形成对用户的印象，并在后续对话中参考这些印象。需要额外安装记忆插件。"
+  },
+  "observation_mode_threshold": {
+    "description": "观察模式阈值（群活跃度低于此值时进入观察）",
+    "type": "float",
+    "default": 0.2,
+    "hint": "群聊活跃度的阈值，范围0-1。当群活跃度低于此值时，机器人会进入观察模式，减少主动发言。值越低机器人越容易进入观察模式。"
+  },
+  "air_reading_enabled": {
+    "description": "是否启用读空气功能",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，机器人会分析对话氛围，判断是否适合插话。有助于避免在不合适的时机发言，提升对话质量。"
+  },
+  "air_reading_no_reply_marker": {
+    "description": "读空气不回复标记（LLM返回此内容时不回复）",
+    "type": "string",
+    "default": "[DO_NOT_REPLY]",
+    "hint": "当LLM分析后返回包含此标记的内容时，机器人不会回复。可以自定义此标记，但需要确保LLM能够理解并正确使用。"
+  },
+  "fatigue_decay_rate": {
+    "description": "疲劳度衰减率（每小时衰减的比例，0-1之间）",
+    "type": "float",
+    "default": 0.5,
+    "hint": "疲劳度每小时自动衰减的比例。值越高衰减越快，机器人恢复活跃的速度越快。建议设置在0.3-0.7之间。"
+  },
+  "fatigue_reset_interval": {
+    "description": "疲劳度重置间隔（小时）",
+    "type": "int",
+    "default": 6,
+    "hint": "完全重置疲劳度的时间间隔。超过此时间后，疲劳度会完全重置为0。建议设置在4-12小时之间。"
+  },
+  "heartbeat_threshold": {
+    "description": "主动心跳触发门槛（0-1，越低越容易触发）",
+    "type": "float",
+    "default": 0.55,
+    "hint": "触发主动心跳回复的阈值，范围0-1。值越低机器人越容易主动发言，但可能显得过于活跃。建议设置在0.4-0.7之间。"
+  },
+  "at_boost_value": {
+    "description": "被@时一次性增强幅度（0-1）",
+    "type": "float",
+    "default": 0.5,
+    "hint": "当用户@机器人时，回复意愿的增强幅度。值越高表示被@时回复意愿越强。建议设置在0.3-0.8之间。"
+  },
+  "heartbeat_interval": {
+    "description": "主动心跳检查间隔（秒），值越大回复频率越低",
+    "type": "int",
+    "default": 30,
+    "hint": "机器人检查是否需要进行主动回复的时间间隔。值越大检查频率越低，机器人主动发言的机会越少。建议设置在20-60秒之间。"
+  },
+  "cooldown_seconds": {
+    "description": "触发主动回复后的冷却时间（秒），值越大回复间隔越长",
+    "type": "int",
+    "default": 10,
+    "hint": "机器人主动回复后的冷却时间。在此期间不会再次触发主动回复，避免连续刷屏。建议设置在5-30秒之间。"
+  },
+  "enable_detailed_logging": {
+    "description": "启用详细日志输出",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后输出更详细的调试信息，包括决策过程、概率计算等。建议在调试时开启，正常使用时关闭以减少日志量。"
+  },
+  "image_processing": {
+    "description": "图片处理相关配置",
+    "type": "object",
+    "hint": "配置机器人如何处理消息中的图片内容，包括图片转文字、图片过滤等功能。",
+    "items": {
+      "enable_image_processing": {
+        "type": "bool",
+        "description": "启用图片处理功能",
+        "hint": "开启后插件会处理消息中的图片内容。关闭时所有图片相关功能都将禁用。",
+        "default": false
+      },
+      "image_mode": {
+        "type": "string",
+        "description": "普通图片的处理模式",
+        "hint": "direct：直接处理图片内容；caption：将图片转为文字描述；ignore：忽略图片内容。",
+        "options": ["direct", "caption", "ignore"],
+        "default": "ignore"
+      },
+      "enable_at_image_caption": {
+        "type": "bool",
+        "description": "启用@消息图片转文字功能",
+        "hint": "当回复消息是有@的并且包含图片消息时，把图片信息发送给指定的服务提供商转成文字之后再和原消息合并。此功能优先于普通图片处理。",
+        "default": false
+      },
+      "at_image_caption_provider_id": {
+        "type": "string",
+        "description": "@消息图片转文字服务提供商ID",
+        "hint": "当启用@消息图片转文字功能时，指定图片转文字的服务提供商ID，留空则使用默认的服务提供商。需要确保该服务商支持图片识别功能。",
+        "default": ""
+      },
+      "at_image_caption_prompt": {
+        "type": "string",
+        "description": "@消息图片转文字提示词",
+        "hint": "用于@消息图片转文字的提示词，留空则直接将图片转给指定的服务提供商，不给提示词。可以自定义提示词以获得更准确的图片描述。",
+        "default": ""
+      },
+      "image_caption_provider_id": {
+        "type": "string",
+        "description": "普通图片的转文字服务提供商ID",
+        "hint": "当选择图片处理模式时，指定图片转文字的服务提供商ID。需要确保该服务商支持图片识别功能。",
+        "default": ""
+      },
+      "image_caption_prompt": {
+        "type": "string",
+        "description": "普通图片的转文字提示词",
+        "hint": "用于描述图片转文字的提示词。可以自定义以获得更符合需求的图片描述格式和内容。",
+        "default": "请直接简短描述这张图片"
+      },
+      "enable_detailed_logging": {
+        "type": "bool",
+        "description": "启用详细日志输出",
+        "hint": "开启后输出图片处理过程的详细调试信息，包括图片检测、转文字结果等。建议在调试图片功能时开启。",
+        "default": false
+      }
+    }
+  }
+}
