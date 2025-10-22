@@ -14,6 +14,31 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 from astrbot.api.provider import LLMResponse
 
+# LLM指令常量定义
+IMMERSIVE_SESSION_INSTRUCTION = (
+    "你正在与一位用户进行沉浸式对话，需要根据对话历史和人格设定，判断是否要继续回复。"
+    "【1. 输出格式】必须严格返回```json{\"should_reply\": 布尔值, \"content\": \"字符串\"}```的格式，否则无效。"
+    "【2. 字段解释】"
+    " - `should_reply` (布尔值): 决定你是否想主动发起或继续对话。true表示想，false表示不想。"
+    " - `content` (字符串): 你的回复内容。即使不想继续对话(false)，也可以通过提供内容来发表简短、非引导性的评论。"
+    "【3. 判断场景】"
+    " - **想继续对话 (should_reply: true)**: 当用户的话题有趣、与你相关、或你能提供价值时使用。此时`content`应为具体回复。"
+    " - **不想继续对话 (should_reply: false)**: 当用户的话题无关、无聊、或你想结束对话时使用。此时`content`可为空字符串(不回复)，或一句简短的结束语。"
+    " - **情景感知**: 这是用户的追问，请结合'完整对话历史'理解前因后果，再做出决策。"
+)
+
+PROACTIVE_REPLY_INSTRUCTION = (
+    "你需要根据对话历史和人格设定，判断是否要回复以及回复什么。"
+    "【1. 输出格式】必须严格返回```json{\"should_reply\": 布尔值, \"content\": \"字符串\"}```的格式，否则无效。"
+    "【2. 字段解释】"
+    " - `should_reply` (布尔值): 决定你是否想主动发起或继续对话。true表示想，false表示不想。"
+    " - `content` (字符串): 你的回复内容。即使不想继续对话(false)，也可以通过提供内容来发表简短、非引导性的评论。"
+    "【3. 判断场景】"
+    " - **想继续对话 (should_reply: true)**: 当话题有趣、与你相关、或你能提供价值时使用。此时`content`应为具体回复。"
+    " - **不想继续对话 (should_reply: false)**: 当话题无关、无聊、或你想结束对话时使用。此时`content`可为空字符串（不回复），或一句简短的结束语/吐槽。"
+    " - **情景感知**: 分析'最近群聊内容'判断当前讨论是否已结束或是一个新开端，结合'完整对话历史'理解前因后果，再做出决策。"
+)
+
 # 添加src目录到Python路径 - 使用更安全的方式
 current_dir = Path(__file__).parent
 src_dir = current_dir / "src"
@@ -33,7 +58,7 @@ try:
     from fatigue_system import FatigueSystem
     from context_analyzer import ContextAnalyzer
     from state_manager import StateManager
-    from image_processor import ImageProcessor
+    # 不再导入ImageProcessor，功能将整合到main.py中
 except ImportError as e:
     logger.warning(f"无法导入部分模块，某些功能可能受限: {e}")
 
@@ -66,8 +91,8 @@ class GroupChatPluginEnhanced(Star):
             self.impression_manager = ImpressionManager(context, config)
             self.memory_integration = MemoryIntegration(context, config)
             self.interaction_manager = InteractionManager(context, config, self.state_manager)
-            self.image_processor = ImageProcessor(context, config)
-            self.response_engine = ResponseEngine(context, config, self.image_processor)
+            # 不再创建ImageProcessor实例，功能将整合到main.py中
+            self.response_engine = ResponseEngine(context, config, self)
             self.willingness_calculator = WillingnessCalculator(context, config, self.impression_manager, self.state_manager)
             self.focus_chat_manager = FocusChatManager(context, config, self.state_manager)
             self.fatigue_system = FatigueSystem(config, self.state_manager)
@@ -84,11 +109,17 @@ class GroupChatPluginEnhanced(Star):
         except Exception as e:
             logger.error(f"初始化群聊插件组件时出错: {e}")
         
+        # 初始化图片拦截状态字典
+        self.image_interception_states = {}
+        
         logger.info("增强版群聊插件初始化完成 - 已融合沉浸式对话和主动插话功能")
+        
+        # 初始化图片处理相关缓存
+        self.caption_cache = {}
         
         # 检查是否启用详细日志
         if self._is_detailed_logging():
-            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 插件初始化完成，组件数量: {len([comp for comp in [self.state_manager, self.group_list_manager, self.impression_manager, self.memory_integration, self.interaction_manager, self.image_processor, self.response_engine, self.willingness_calculator, self.focus_chat_manager, self.fatigue_system, self.context_analyzer, self.active_chat_manager] if comp is not None])}")
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 插件初始化完成，组件数量: {len([comp for comp in [self.state_manager, self.group_list_manager, self.impression_manager, self.memory_integration, self.interaction_manager, self.response_engine, self.willingness_calculator, self.focus_chat_manager, self.fatigue_system, self.context_analyzer, self.active_chat_manager] if comp is not None])}")
     
     def _is_detailed_logging(self) -> bool:
         """检查是否启用详细日志输出。"""
@@ -115,6 +146,368 @@ class GroupChatPluginEnhanced(Star):
             return "配置类型非字典"
         except Exception:
             return "无法摘要配置"
+
+    def _extract_images(self, message_event) -> List[str]:
+        """提取消息中的图片"""
+        images = []
+        
+        try:
+            # ✅ 方法1：优先从原始消息文本中提取CQ码图片
+            raw_message_text = ""
+            
+            # 尝试多种方式获取原始消息
+            try:
+                raw_message_text = str(message_event.message_obj.raw_message.get("raw_message", "")).strip()
+            except Exception:
+                pass
+            
+            if not raw_message_text:
+                try:
+                    # 尝试从message_obj直接获取
+                    if hasattr(message_event, 'message_obj') and hasattr(message_event.message_obj, '__str__'):
+                        raw_message_text = str(message_event.message_obj).strip()
+                except Exception:
+                    pass
+            
+            if not raw_message_text:
+                raw_message_text = getattr(message_event, 'message_str', '').strip()
+            
+            logger.debug(f"[图片提取] 原始消息文本: {raw_message_text[:200] if raw_message_text else '无'}")
+            
+            # ✅ 改进的CQ码图片正则表达式 - 使用非贪婪匹配
+            if raw_message_text and '[CQ:image' in raw_message_text:
+                import re
+                
+                # 方法1：提取完整的CQ码图片（包括所有参数）
+                # 使用 .*? 进行非贪婪匹配，确保不会跨越多个CQ码
+                cq_pattern = r'\[CQ:image,([^\]]+)\]'
+                cq_matches = re.findall(cq_pattern, raw_message_text)
+                
+                logger.info(f"[图片提取] 找到 {len(cq_matches)} 个CQ:image标识")
+                
+                for idx, cq_params in enumerate(cq_matches):
+                    logger.debug(f"[图片提取] CQ码参数 {idx+1}: {cq_params[:100]}...")
+                    
+                    # 提取URL参数（可能在任意位置）
+                    url_match = re.search(r'url=([^,\]]+)', cq_params)
+                    if url_match:
+                        url = url_match.group(1).strip()
+                        if url:
+                            # 修复HTML转义字符
+                            url = url.replace('&amp;', '&')
+                            
+                            # 检查URL格式，确保是有效的HTTP/HTTPS链接
+                            if url.startswith('http://') or url.startswith('https://'):
+                                images.append(url)
+                                logger.info(f"[图片提取] 从URL参数提取到有效图片 {idx+1}: {url[:80]}...")
+                            else:
+                                # 如果不是HTTP/HTTPS链接，可能需要转换格式
+                                logger.warning(f"[图片提取] 提取到非标准URL格式: {url}")
+                                # 尝试转换为有效URL
+                                if url.startswith('base64://'):
+                                    # base64格式的图片，需要特殊处理
+                                    logger.warning(f"[图片提取] 跳过base64格式图片: {url[:50]}...")
+                                else:
+                                    # 尝试添加http前缀
+                                    http_url = f"http://{url}" if not url.startswith('//') else f"http:{url}"
+                                    images.append(http_url)
+                                    logger.info(f"[图片提取] 转换URL格式为: {http_url[:80]}...")
+                            continue
+                    
+                    # 如果URL提取失败，提取file参数作为备选
+                    file_match = re.search(r'file=([^,\]]+)', cq_params)
+                    if file_match:
+                        file_name = file_match.group(1).strip()
+                        if file_name:
+                            # file参数通常是本地文件路径，需要转换为可访问的URL
+                            logger.warning(f"[图片提取] 提取到file参数: {file_name}")
+                            # 对于本地文件路径，LLM无法直接访问，跳过处理
+                            logger.warning(f"[图片提取] 跳过本地文件路径图片: {file_name}")
+            
+            # ✅ 方法2：从消息链中提取图片组件（作为备选）
+            if not images:
+                try:
+                    message_chain = None
+                    if hasattr(message_event, 'get_message_chain'):
+                        message_chain = message_event.get_message_chain()
+                    elif hasattr(message_event, 'message_chain'):
+                        message_chain = message_event.message_chain
+                    
+                    if message_chain:
+                        for component in message_chain:
+                            if hasattr(component, 'type') and component.type == 'image':
+                                if hasattr(component, 'url') and component.url:
+                                    url = component.url
+                                    # 检查URL格式，确保是有效的HTTP/HTTPS链接
+                                    if url.startswith('http://') or url.startswith('https://'):
+                                        images.append(url)
+                                        logger.info(f"[图片提取] 从消息链提取到有效URL: {url[:80]}...")
+                                    else:
+                                        logger.warning(f"[图片提取] 从消息链提取到非标准URL格式: {url}")
+                                        # 尝试转换为有效URL
+                                        if not url.startswith('base64://'):
+                                            http_url = f"http://{url}" if not url.startswith('//') else f"http:{url}"
+                                            images.append(http_url)
+                                            logger.info(f"[图片提取] 转换消息链URL为: {http_url[:80]}...")
+                                elif hasattr(component, 'file') and component.file:
+                                    # file参数通常是本地文件路径，LLM无法直接访问
+                                    logger.warning(f"[图片提取] 从消息链提取到file参数: {component.file}")
+                                    logger.warning(f"[图片提取] 跳过本地文件路径图片: {component.file}")
+                                elif hasattr(component, 'data') and component.data:
+                                    # data参数通常是base64数据，需要特殊处理
+                                    logger.warning(f"[图片提取] 从消息链提取到data参数: {component.data[:50]}...")
+                                    logger.warning(f"[图片提取] 跳过base64格式图片")
+                except Exception as e:
+                    logger.debug(f"[图片提取] 从消息链提取失败: {e}")
+            
+            # 记录最终结果
+            if images:
+                logger.info(f"[图片提取] 总共提取到 {len(images)} 张图片")
+            else:
+                logger.debug(f"[图片提取] 未提取到任何图片")
+                
+        except Exception as e:
+            logger.error(f"[图片提取] 提取图片时发生错误: {e}", exc_info=True)
+        
+        return images
+
+    def _is_at_message(self, message_text: str, message_event) -> bool:
+        """检查消息是否为@消息"""
+        # 检查消息文本中的@标识
+        if message_text and ("[At:" in message_text or "[CQ:at" in message_text or "@" in message_text):
+            return True
+        
+        # 检查事件对象中的@信息
+        try:
+            if hasattr(message_event, 'get_at_users'):
+                at_users = message_event.get_at_users()
+                if at_users and len(at_users) > 0:
+                    return True
+        except Exception:
+            pass
+        
+        return False
+
+    def _get_message_text(self, message_event) -> str:
+        """获取消息文本"""
+        try:
+            if hasattr(message_event, 'message_str'):
+                return message_event.message_str
+            elif hasattr(message_event, 'get_message_text'):
+                return message_event.get_message_text()
+            else:
+                return str(message_event)
+        except Exception:
+            return ""
+
+    async def _detect_and_caption_at_images(self, message_event) -> Optional[Dict[str, Any]]:
+        """
+        @消息图片检测并转文字描述函数
+        
+        Args:
+            message_event: 消息事件对象
+            
+        Returns:
+            如果符合@消息图片条件并处理成功，返回处理结果；否则返回None
+        """
+        try:
+            # 获取@消息图片转文字配置
+            logger.info(f"[_detect_and_caption_at_images] 开始执行，self.config类型: {type(self.config)}")
+            logger.info(f"[_detect_and_caption_at_images] self.config内容: {self.config}")
+            
+            # 检查self.config是否为None或空
+            if not self.config:
+                logger.warning("[_detect_and_caption_at_images] self.config为空或None")
+                return None
+            
+            # 检查self.config是否为字典类型
+            if not isinstance(self.config, dict):
+                logger.warning(f"[_detect_and_caption_at_images] self.config不是字典类型: {type(self.config)}")
+                return None
+            
+            # 检查image_processing配置是否存在
+            if "image_processing" not in self.config:
+                logger.warning("[_detect_and_caption_at_images] 配置中缺少image_processing字段")
+                return None
+        
+            image_config = self.config.get("image_processing", {})
+            enable_at_image_caption = image_config.get("enable_at_image_caption", False)
+            
+            logger.info(f"[_detect_and_caption_at_images] 配置检查 - image_config: {image_config}")
+            logger.info(f"[_detect_and_caption_at_images] 配置检查 - enable_at_image_caption: {enable_at_image_caption}")
+            
+            # 如果不启用@消息图片转文字功能，直接返回None
+            if not enable_at_image_caption:
+                logger.info("[_detect_and_caption_at_images] @消息图片转文字功能未启用")
+                return None
+        
+            # 检查消息是否包含@ - 使用原始消息而不是处理后的消息
+            message_text = self._get_message_text(message_event)
+            
+            # 尝试获取原始消息
+            raw_message_text = ""
+            try:
+                raw_message_text = str(message_event.message_obj.raw_message.get("raw_message", "")).strip()
+            except Exception:
+                pass
+            
+            if not raw_message_text:
+                try:
+                    raw_message_text = str(message_event.message_obj).strip()
+                except Exception:
+                    pass
+            
+            if not raw_message_text:
+                raw_message_text = getattr(message_event, 'message_str', '').strip()
+            
+            logger.info(f"[_detect_and_caption_at_images] 原始消息文本: '{raw_message_text[:100] if raw_message_text else '无'}'")
+            logger.info(f"[_detect_and_caption_at_images] 处理后消息文本: '{message_text[:100] if message_text else '无'}'")
+            
+            # 使用原始消息进行@检测
+            is_at = self._is_at_message(raw_message_text, message_event)
+            logger.info(f"[_detect_and_caption_at_images] @消息检测结果: {is_at}")
+            
+            if not is_at:
+                return None
+            
+            # 提取消息中的图片
+            images = self._extract_images(message_event)
+            logger.info(f"[_detect_and_caption_at_images] 提取到的图片数量: {len(images)}")
+            logger.info(f"[_detect_and_caption_at_images] 图片列表: {images}")
+            
+            if not images:
+                return None
+            
+            if self._is_detailed_logging():
+                logger.debug(f"检测到@消息包含图片，开始图片转文字处理，图片数量: {len(images)}")
+            
+            # 获取服务提供商和提示词
+            provider_id = image_config.get("at_image_caption_provider_id", "")
+            prompt = image_config.get("at_image_caption_prompt", "")
+            
+            # 获取服务提供商
+            if provider_id:
+                provider = self.context.get_provider_by_id(provider_id)
+            else:
+                provider = self.context.get_using_provider()
+            
+            if not provider:
+                logger.warning("无法找到@消息图片转文字服务提供商")
+                return None
+            
+            # 为每张图片生成描述
+            captions = []
+            for image in images:
+                caption = await self._generate_image_caption_enhanced(image, provider, prompt)
+                if caption:
+                    captions.append(caption)
+            
+            if not captions:
+                return None
+            
+            # 合并图片描述和原消息
+            combined_message = self._combine_captions_with_message(message_text, captions)
+            
+            if self._is_detailed_logging():
+                logger.debug(f"@消息图片转文字完成，原消息: {message_text[:100]}...，合并后消息: {combined_message[:100]}...")
+            
+            return {
+                "images": [],
+                "captions": captions,
+                "has_images": True,
+                "filtered_message": combined_message
+            }
+        except Exception as e:
+            logger.error(f"[_detect_and_caption_at_images] 方法执行过程中发生异常: {e}", exc_info=True)
+            return None
+
+    def _combine_captions_with_message(self, message_text: str, captions: List[str]) -> str:
+        """合并图片描述和原消息"""
+        if not captions:
+            return message_text
+        
+        caption_text = "，".join(captions)
+        return f"{message_text}\n图片内容：{caption_text}"
+
+    async def _generate_image_caption_enhanced(self, image: str, provider, prompt: str) -> Optional[str]:
+        """生成图片描述（增强版）"""
+        try:
+            # 检查缓存
+            if image in self.caption_cache:
+                return self.caption_cache[image]
+            
+            # 使用provider生成图片描述
+            if hasattr(provider, 'generate_image_caption'):
+                caption = await provider.generate_image_caption(image, prompt)
+            else:
+                # 如果provider没有generate_image_caption方法，使用默认方式
+                caption = await self._generate_image_caption_default(image, provider, prompt)
+            
+            # 缓存结果
+            if caption:
+                self.caption_cache[image] = caption
+            
+            return caption
+        except Exception as e:
+            logger.error(f"生成图片描述时出错: {e}")
+            return None
+
+    async def _generate_image_caption_default(self, image: str, provider, prompt: str) -> Optional[str]:
+        """默认的图片描述生成方法"""
+        try:
+            # 使用provider的text_chat方法来生成图片描述
+            # 这是正确的调用方式，参考astrbot_plugin_context_enhancer-main的实现
+            logger.info(f"[图片转文字] 开始调用LLM进行图片描述，图片URL: {image[:100]}...")
+            logger.info(f"[图片转文字] 使用提示词: {prompt}")
+            
+            # 正确的调用方式：直接传递prompt和image_urls
+            llm_response = await provider.text_chat(prompt=prompt, image_urls=[image])
+            
+            caption = llm_response.completion_text
+            
+            logger.info(f"[图片转文字] LLM返回结果: {caption}")
+            
+            return caption
+        except Exception as e:
+            logger.error(f"默认图片描述生成失败: {e}", exc_info=True)
+            return None
+
+    async def caption_images(self, images: List[str]) -> Optional[str]:
+        """手动识别图片方法"""
+        try:
+            if not images:
+                return None
+            
+            # 获取图片处理配置
+            image_config = self.config.get("image_processing", {})
+            provider_id = image_config.get("at_image_caption_provider_id", "")
+            prompt = image_config.get("at_image_caption_prompt", "")
+            
+            # 获取服务提供商
+            if provider_id:
+                provider = self.context.get_provider_by_id(provider_id)
+            else:
+                provider = self.context.get_using_provider()
+            
+            if not provider:
+                logger.warning("无法找到图片识别服务提供商")
+                return None
+            
+            # 为每张图片生成描述
+            captions = []
+            for image in images:
+                caption = await self._generate_image_caption_enhanced(image, provider, prompt)
+                if caption:
+                    captions.append(caption)
+            
+            if not captions:
+                return None
+            
+            # 合并所有图片描述
+            return "，".join(captions)
+        except Exception as e:
+            logger.error(f"手动识别图片时出错: {e}", exc_info=True)
+            return None
 
     def _extract_json_from_text(self, text: str) -> str:
         """从文本中提取JSON内容（来自直接回复插件）"""
@@ -208,8 +601,509 @@ class GroupChatPluginEnhanced(Star):
             self.immersive_sessions.pop(session_key, None)
             logger.debug(f"[沉浸式对话] 会话 {session_key} 已超时并清理。")
 
-    async def _start_proactive_check(self, group_id: str, unified_msg_origin: str):
+    async def _detect_at_images(self, event) -> tuple[bool, str, bool]:
+        """
+        @消息图片检测函数
+        返回: (should_process_message, filtered_message, is_at_image)
+        """
+        # 获取图片处理配置
+        image_config = self.config.get("image_processing", {})
+        
+        # ✅ 修改1：优先从多个来源获取原始消息
+        raw_message_text = ""
+        
+        # 方式1：从raw_message获取
+        try:
+            raw_message_text = str(event.message_obj.raw_message.get("raw_message", "")).strip()
+        except Exception:
+            pass
+        
+        # 方式2：如果方式1失败，尝试直接从message_obj获取
+        if not raw_message_text:
+            try:
+                raw_message_text = str(event.message_obj).strip()
+            except Exception:
+                pass
+        
+        # 方式3：如果都失败，使用message_str
+        if not raw_message_text:
+            raw_message_text = getattr(event, 'message_str', '').strip()
+        
+        # 获取处理后的消息文本
+        message_text = getattr(event, 'message_str', '').strip()
+        if not message_text:
+            message_text = raw_message_text
+        
+        logger.info(f"[图片检测] 原始消息: '{raw_message_text[:100] if raw_message_text else '无'}'")
+        logger.info(f"[图片检测] 处理后消息: '{message_text[:100] if message_text else '无'}'")
+        
+        # 检查是否启用@消息图片转文字功能
+        enable_at_image_caption = image_config.get("enable_at_image_caption", False)
+        
+        if not enable_at_image_caption:
+            logger.debug("[图片检测] @消息图片转文字功能未启用")
+            return True, message_text, False
+        
+        # ✅ 修改2：更可靠的@消息检测逻辑
+        is_at_message = False
+        
+        # 检查原始消息和处理后消息
+        for msg in [raw_message_text, message_text]:
+            if msg and ("[At:" in msg or "[CQ:at" in msg or "@" in msg):
+                is_at_message = True
+                logger.info(f"[图片检测] 检测到@消息标识: {msg[:50]}")
+                break
+        
+        # 方法3：检查事件对象中的@信息
+        if not is_at_message:
+            try:
+                if hasattr(event, 'get_at_users'):
+                    at_users = event.get_at_users()
+                    if at_users and len(at_users) > 0:
+                        is_at_message = True
+                        logger.info(f"[图片检测] 通过get_at_users检测到@消息: {at_users}")
+            except Exception as e:
+                logger.debug(f"[图片检测] get_at_users检测失败: {e}")
+        
+        if not is_at_message:
+            logger.debug("[图片检测] 未检测到@消息")
+            return True, message_text, False
+        
+        # ✅ 修改3：更强大的图片检测逻辑 - 优先使用image_processor
+        has_images = False
+        
+        # 方法1：使用image_processor提取图片（最可靠）
+        if hasattr(self, 'image_processor'):
+            try:
+                images = self.image_processor._extract_images(event)
+                has_images = len(images) > 0
+                if has_images:
+                    logger.info(f"[图片检测] 通过image_processor检测到 {len(images)} 张图片")
+            except Exception as e:
+                logger.warning(f"[图片检测] image_processor检测失败: {e}")
+        
+        # 方法2：如果方法1失败，检查原始消息中的图片标识
+        if not has_images:
+            for msg in [raw_message_text, message_text]:
+                if msg and (
+                    "[图片]" in msg or
+                    "[CQ:image" in msg or
+                    any(ext in msg for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']) or
+                    "动画表情" in msg or
+                    "image" in msg.lower()
+                ):
+                    has_images = True
+                    logger.info(f"[图片检测] 在消息中检测到图片标识")
+                    break
+        
+        if not has_images:
+            logger.info(f"[图片检测] 检测到@消息但未包含图片，跳过图片转文字处理")
+            return True, message_text, True
+        
+        logger.info(f"[图片检测] 检测到@消息且包含图片，开始处理图片转文字")
+        
+        # 调用本地方法处理@消息图片
+        try:
+            logger.info(f"[图片检测] 开始调用_detect_and_caption_at_images")
+            
+            processed_result = await self._detect_and_caption_at_images(event)
+            
+            logger.info(f"[图片检测] _detect_and_caption_at_images返回结果类型: {type(processed_result)}")
+            logger.info(f"[图片检测] _detect_and_caption_at_images返回结果内容: {processed_result}")
+            
+            if processed_result:
+                filtered_message = processed_result.get("filtered_message", message_text)
+                logger.info(f"[图片检测] @消息图片转文字完成，过滤后消息: '{filtered_message[:100]}...'")
+                return True, filtered_message, True
+            else:
+                # ✅ 当返回None时，尝试手动识别图片
+                logger.warning(f"[图片检测] @消息图片转文字处理返回空结果，尝试手动识别图片")
+                
+                try:
+                    # 提取图片
+                    images = self._extract_images(event)
+                    logger.info(f"[图片检测] 手动提取到 {len(images)} 张图片")
+                    
+                    if images:
+                        # 调用图片识别
+                        caption_result = await self.caption_images(images)
+                        logger.info(f"[图片检测] 手动识别结果: {caption_result}")
+                        
+                        if caption_result:
+                            # 将识别结果添加到消息中
+                            filtered_message = f"{message_text}\n图片内容：{caption_result}"
+                            logger.info(f"[图片检测] 手动识别成功，更新消息为: {filtered_message[:100]}...")
+                            return True, filtered_message, True
+                        else:
+                            logger.warning(f"[图片检测] 手动识别失败，返回原始消息")
+                            return True, message_text, True
+                    else:
+                        logger.warning(f"[图片检测] 未能提取到图片，返回原始消息")
+                        return True, message_text, True
+                        
+                except Exception as e:
+                    logger.error(f"[图片检测] 手动识别图片时出错: {e}", exc_info=True)
+                    return True, message_text, True
+                
+        except Exception as e:
+            logger.error(f"[图片检测] @消息图片转文字处理出错: {e}", exc_info=True)  # 添加完整的堆栈跟踪
+            return True, message_text, True
+        
+    async def _intercept_other_images(self, event, message_text: str) -> tuple[bool, str]:
+        """
+        其他消息图片拦截函数
+        
+        Args:
+            event: 消息事件对象
+            message_text: 消息文本
+            
+        Returns:
+            (should_process_message, filtered_message)
+        """
+        # 获取图片处理配置
+        image_config = self.config.get("image_processing", {})
+        enable_image_processing = image_config.get("enable_image_processing", False)
+        image_mode = image_config.get("image_mode", "ignore")
+        
+        logger.info(f"[图片检测] 配置检查 - enable_image_processing: {enable_image_processing}, image_mode: {image_mode}")
+        
+        # 如果未开启图片处理，直接返回正常处理
+        if not enable_image_processing:
+            return True, message_text
+        
+        # 如果是ignore模式，直接拦截图片消息
+        if image_mode == "ignore":
+            # 检测消息是否包含图片标识（支持多种格式）
+            is_image_message = (
+                "[图片]" in message_text or
+                "[CQ:image" in message_text or
+                any(ext in message_text for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']) or
+                "动画表情" in message_text or
+                "image" in message_text.lower()
+            )
+            
+            if is_image_message:
+                logger.info(f"[图片检测] ignore模式检测到图片消息，拦截处理")
+                # 设置标记，让after_bot_message_sent知道这是图片消息拦截
+                event._is_image_message = True
+                return False, message_text  # 拦截消息
+            else:
+                return True, message_text  # 非图片消息正常处理
+        
+        # 检测消息是否包含图片标识（支持多种格式）
+        is_image_message = (
+            "[图片]" in message_text or
+            "[CQ:image" in message_text or
+            any(ext in message_text for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']) or
+            "动画表情" in message_text or
+            "image" in message_text.lower()
+        )
+        
+        if not is_image_message:
+            return True, message_text
+        
+        # 检查是否启用详细日志
+        if self._is_detailed_logging():
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 检测到[图片]标识")
+        
+        # 检测纯图片消息（支持多种图片格式）
+        stripped_message = message_text.strip()
+        is_pure_image = False
+        
+        # 如果是CQ码图片消息，直接判定为纯图片
+        if "[CQ:image" in stripped_message:
+            is_pure_image = True
+            logger.info(f"[图片检测] 检测到CQ码图片消息，判定为纯图片")
+        # 如果是标准[图片]标识
+        elif stripped_message == "[图片]" or (stripped_message.startswith("[图片]") and len(stripped_message.replace("[图片]", "").strip()) == 0):
+            is_pure_image = True
+        # 如果是包含常见图片格式的文件名
+        elif any(ext in stripped_message for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']):
+            # 检查是否只包含图片相关标识
+            temp_text = stripped_message.lower()
+            # 移除图片格式后检查是否还有有效内容
+            for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
+                temp_text = temp_text.replace(ext, '')
+            # 如果移除图片格式后只剩下空白或常见图片标识，判定为纯图片
+            temp_text = temp_text.strip()
+            if len(temp_text) == 0 or all(keyword in temp_text for keyword in ['cq:', 'image', 'file', 'url']):
+                is_pure_image = True
+                logger.info(f"[图片检测] 检测到图片文件消息，判定为纯图片")
+        # 如果是动画表情
+        elif "动画表情" in stripped_message:
+            is_pure_image = True
+            logger.info(f"[图片检测] 检测到动画表情，判定为纯图片")
+        
+        if is_pure_image:
+            # 检查是否启用详细日志
+            if self._is_detailed_logging():
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 消息仅包含[图片]标识，忽略消息")
+            
+            logger.info(f"[图片检测] 检测到纯图片消息: '{message_text}'，拦截但不清理沉浸式会话")
+            
+            # 检查是否存在沉浸式会话
+            session_key = (event.get_group_id(), event.get_sender_id())
+            async with self.immersive_lock:
+                if session_key in self.immersive_sessions:
+                    logger.info(f"[图片检测] 沉浸式会话存在: {session_key}，保持会话继续运行")
+                    # 重置定时器，让沉浸式对话继续有效
+                    session_data = self.immersive_sessions[session_key]
+                    if session_data.get('timer'):
+                        session_data['timer'].cancel()
+                        logger.info(f"[图片检测] 已取消当前定时器: {session_key}")
+                    
+                    # 使用配置中的沉浸式对话超时秒数
+                    timeout_seconds = self.config.get("immersive_chat_timeout", 120)
+                    
+                    # 重新启动定时器，保持沉浸式对话有效
+                    session_data['timer'] = asyncio.get_running_loop().call_later(
+                        timeout_seconds, 
+                        self._clear_immersive_session, 
+                        session_key
+                    )
+                    logger.info(f"[图片检测] 已重新启动{timeout_seconds}秒定时器: {session_key}")
+                else:
+                    logger.info(f"[图片检测] 未找到沉浸式会话: {session_key}")
+            
+            # 如果image_mode为direct，直接传递图片给AI
+            if image_mode == "direct":
+                logger.info(f"[图片检测] 直接传递图片模式，开始处理图片")
+                
+                # 提取图片
+                images = self._extract_images(event)
+                logger.info(f"[图片检测] 提取到 {len(images)} 张图片")
+                
+                if images:
+                    # 在direct模式下，将图片信息传递给后续处理
+                    # 设置图片信息到event对象中，让后续流程能够使用
+                    event._images = images
+                    event._is_image_message = True
+                    
+                    # 返回True让消息继续处理，图片信息会通过event传递给LLM
+                    logger.info(f"[图片检测] 直接传递图片模式处理完成，图片数量: {len(images)}")
+                    return True, message_text
+                else:
+                    logger.warning(f"[图片检测] 直接传递图片模式但未提取到图片")
+            
+            # 如果image_mode为caption，调用图片转文字功能
+            elif image_mode == "caption":
+                logger.info(f"[图片检测] 图片转文字模式，开始处理图片转文字")
+                
+                # 提取图片
+                images = self._extract_images(event)
+                logger.info(f"[图片检测] 提取到 {len(images)} 张图片")
+                
+                if images:
+                    # 调用图片转文字功能
+                    caption_result = await self.caption_images(images)
+                    if caption_result:
+                        logger.info(f"[图片检测] 图片转文字成功，结果: {caption_result}")
+                        # 设置event.message_str为图片描述，让后续处理使用
+                        event.message_str = caption_result
+                        # 设置标记，让after_bot_message_sent知道这是图片消息拦截
+                        event._is_image_message = True
+                        
+                        # 返回True表示需要处理消息，但消息内容已替换为图片描述
+                        return True, caption_result
+                    else:
+                        logger.warning(f"[图片检测] 图片转文字失败")
+            
+            logger.info(f"[图片检测] 纯图片消息已拦截，沉浸式会话保持运行")
+            # 设置标记，让after_bot_message_sent知道这是图片消息拦截
+            event._is_image_message = True
+            
+            return False, message_text  # 不处理消息
+        else:
+            # 如果消息包含[图片]标识和其他文字，过滤标识后继续处理
+            filtered_message = message_text.replace("[图片]", "").strip()
+            
+            # 检查是否启用详细日志
+            if self._is_detailed_logging():
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 消息包含[图片]标识和其他文字，过滤后消息: '{filtered_message}'")
+            
+            logger.info(f"[图片检测] 检测到包含[图片]标识的消息，已移除标识，过滤后消息: '{filtered_message[:50]}...'")
+            
+            return True, filtered_message
+
+    async def _handle_immersive_session(self, event: AstrMessageEvent, session_key: tuple, session_data: dict) -> bool:
+        """
+        处理沉浸式会话逻辑
+        
+        Args:
+            event: 消息事件对象（event.message_str已经是图片转文字后的内容）
+            session_key: 会话键 (group_id, user_id)
+            session_data: 会话数据
+            
+        Returns:
+            bool: 是否已处理沉浸式会话（True表示已处理，False表示未处理）
+        """
+        logger.info(f"[沉浸式对话] 捕获到用户 {event.get_sender_id()} 的连续消息，开始判断是否回复。")
+        
+        # 检查是否启用详细日志
+        if self._is_detailed_logging():
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 沉浸式对话会话存在，会话键: {session_key}")
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 会话数据: 上下文长度={len(session_data.get('context', []))}")
+        
+        # 因为要进行沉浸式回复，所以取消可能存在的、针对全群的主动插话任务
+        group_id = event.get_group_id()
+        async with self.proactive_lock:
+            if group_id in self.active_proactive_timers:
+                self.active_proactive_timers[group_id].cancel()
+                logger.debug(f"[沉浸式对话] 已取消群 {group_id} 的主动插话任务。")
+                
+                # 检查是否启用详细日志
+                if self._is_detailed_logging():
+                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 已取消群 {group_id} 的主动插话任务")
+    
+        # 阻止事件继续传播，避免触发默认的LLM回复
+        event.stop_event()
+        
+        # 检查是否启用详细日志
+        if self._is_detailed_logging():
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 已阻止事件传播，开始沉浸式对话处理")
+    
+        found_persona = await self._get_persona_info_str(event.unified_msg_origin)
+        
+        saved_context = session_data.get('context', [])
+        
+        # ✅ 关键修改：支持direct模式下的图片传递
+        user_prompt = event.message_str
+        
+        # 检查是否是direct模式的图片消息
+        if hasattr(event, '_images') and event._images:
+            logger.info(f"[沉浸式对话] 检测到direct模式图片消息，图片数量: {len(event._images)}")
+            # 在direct模式下，我们需要将图片信息传递给LLM
+            # 这里可以添加图片URL或路径到提示中，或者使用支持多模态的API
+            user_prompt = f"[图片消息] 用户发送了 {len(event._images)} 张图片"
+            # 在实际实现中，这里应该调用支持多模态的LLM API
+        
+        # 添加日志确认使用的消息内容
+        logger.info(f"[沉浸式对话] 使用的用户提示内容（前100字符）: {user_prompt[:100]}...")
+        
+        instruction = IMMERSIVE_SESSION_INSTRUCTION
+    
+        provider = self.context.get_using_provider()
+        if not provider:
+            logger.warning("[沉浸式对话] 未找到可用的大语言模型提供商。")
+            return True
+    
+        # 检查是否启用详细日志
+        if self._is_detailed_logging():
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 开始调用LLM进行沉浸式对话决策")
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 用户提示长度: {len(user_prompt)}")
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 上下文数量: {len(saved_context)}")
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 系统提示长度: {len(instruction)}")
+    
+        # 检查是否是direct模式的图片消息，需要特殊处理
+        if hasattr(event, '_images') and event._images:
+            # 在实际的多模态实现中，这里应该调用支持图片的API
+            # 目前先使用文本模式处理
+            logger.info(f"[沉浸式对话] direct模式图片消息，使用文本模式处理")
+        
+        llm_response = await provider.text_chat(
+            prompt=user_prompt,
+            contexts=saved_context,
+            system_prompt=instruction
+        )
+        
+        # 检查是否启用详细日志
+        if self._is_detailed_logging():
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM调用完成，响应长度: {len(llm_response.completion_text)}")
+        
+        json_string = self._extract_json_from_text(llm_response.completion_text)
+        
+        # 检查是否启用详细日志
+        if self._is_detailed_logging():
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - JSON提取结果: {'成功' if json_string else '失败'}")
+            if json_string:
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 提取的JSON长度: {len(json_string)}")
+        
+        if not json_string:
+            logger.warning(f"[沉浸式对话] 从LLM回复中未能提取出JSON。原始回复: {llm_response.completion_text}")
+            if llm_response.completion_text and llm_response.completion_text.strip():
+                logger.info(f"[沉浸式对话] 使用原始回复内容: {llm_response.completion_text[:100]}...")
+                message_chain = MessageChain().message(llm_response.completion_text)
+                await self.context.send_message(event.unified_msg_origin, message_chain)
+            return True
+        
+        try:
+            decision_data = json.loads(json_string)
+            should_reply = decision_data.get("should_reply")
+            content = decision_data.get("content", "")
+            
+            # 检查是否启用详细日志
+            if self._is_detailed_logging():
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - JSON解析成功，should_reply={should_reply}, content长度={len(content)}")
+        
+            if should_reply is True:
+                if content:
+                    logger.info(f"[沉浸式对话] LLM判断需要回复，内容: {content[:50]}...")
+                    
+                    # 检查是否启用详细日志
+                    if self._is_detailed_logging():
+                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 沉浸式对话决定回复，内容预览: {content[:100]}")
+                    
+                    message_chain = MessageChain().message(content)
+                    await self.context.send_message(event.unified_msg_origin, message_chain)
+                    # 回复后重新启动沉浸式会话
+                    await self._arm_immersive_session(event)
+                    
+                    # 检查是否启用详细日志
+                    if self._is_detailed_logging():
+                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 沉浸式回复已发送，会话已重新启动")
+                else:
+                    logger.info("[沉浸式对话] LLM判断为 true 但内容为空，跳过回复。")
+                    
+                    # 检查是否启用详细日志
+                    if self._is_detailed_logging():
+                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM判断为true但内容为空，跳过回复")
+            elif should_reply is False:
+                if content:
+                    logger.info(f"[沉浸式对话] LLM判断为 false 但仍回复，内容: {content[:50]}...")
+                    
+                    # 检查是否启用详细日志
+                    if self._is_detailed_logging():
+                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM判断为false但仍回复，内容预览: {content[:100]}")
+                    
+                    message_chain = MessageChain().message(content)
+                    await self.context.send_message(event.unified_msg_origin, message_chain)
+                else:
+                    logger.info("[沉浸式对话] LLM判断为 false 且无内容，跳过回复与计时。")
+                    
+                    # 检查是否启用详细日志
+                    if self._is_detailed_logging():
+                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM判断为false且无内容，跳过回复")
+                # 结束沉浸式对话
+                async with self.immersive_lock:
+                    if session_key in self.immersive_sessions:
+                        self.immersive_sessions[session_key]['timer'].cancel()
+                        self.immersive_sessions.pop(session_key, None)
+                    
+                        # 检查是否启用详细日志
+                        if self._is_detailed_logging():
+                            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 沉浸式对话会话已结束，会话键: {session_key}")
+            else:
+                logger.warning("[沉浸式对话] LLM返回格式异常，跳过处理。")
+                
+                # 检查是否启用详细日志
+                if self._is_detailed_logging():
+                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM返回格式异常，should_reply值: {should_reply}")
+        except (json.JSONDecodeError, TypeError, AttributeError) as e:
+            logger.error(f"[沉浸式对话] 解析LLM的JSON回复失败: {e}\n清理后文本: '{json_string}'")
+            
+            # 检查是否启用详细日志
+            if self._is_detailed_logging():
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - JSON解析异常: {e}")
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 原始JSON字符串: {json_string}")
+
+        return True
+
+
+    async def _start_proactive_check(self, group_id: str, unified_msg_origin: str, should_process_message: bool = True):
         """启动或重置一个群组的主动插话检查任务。"""
+        # 存储图片拦截状态
+        self.image_interception_states[group_id] = should_process_message
+        
         async with self.proactive_lock:
             if group_id in self.active_proactive_timers:
                 self.active_proactive_timers[group_id].cancel()
@@ -276,12 +1170,12 @@ class GroupChatPluginEnhanced(Star):
         """延时任务，在指定时间后检查一次是否需要主动插话。"""
         try:
             # 检查点3：在主动插话逻辑前检查图片拦截标记
-            if hasattr(self, 'current_event') and self.current_event and hasattr(self.current_event, '_should_process_message'):
-                if not self.current_event._should_process_message:
-                    logger.info(f"[主动插话检查] 检测到图片消息拦截标记，跳过主动插话逻辑，群组ID: {group_id}")
-                    # 重置标记为True，避免影响后续处理
-                    self.current_event._should_process_message = True
-                    return
+            should_process_message = self.image_interception_states.get(group_id, True)
+            if not should_process_message:
+                logger.info(f"[主动插话检查] 检测到图片消息拦截标记，跳过主动插话逻辑，群组ID: {group_id}")
+                # 重置标记为True，避免影响后续处理
+                self.image_interception_states[group_id] = True
+                return
             
             delay = self.config.get("proactive_reply_delay", 8)
             
@@ -322,17 +1216,7 @@ class GroupChatPluginEnhanced(Star):
             formatted_history = "\n".join(chat_history)
             user_prompt = f"--- 最近的群聊内容 ---\n{formatted_history}\n--- 群聊内容结束 ---"
             
-            instruction = (
-                "你需要根据对话历史和人格设定，判断是否要回复以及回复什么。"
-                "【1. 输出格式】必须严格返回```json{\"should_reply\": 布尔值, \"content\": \"字符串\"}```的格式，否则无效。"
-                "【2. 字段解释】"
-                " - `should_reply` (布尔值): 决定你是否想主动发起或继续对话。true表示想，false表示不想。"
-                " - `content` (字符串): 你的回复内容。即使不想继续对话(false)，也可以通过提供内容来发表简短、非引导性的评论。"
-                "【3. 判断场景】"
-                " - **想继续对话 (should_reply: true)**: 当话题有趣、与你相关、或你能提供价值时使用。此时`content`应为具体回复。"
-                " - **不想继续对话 (should_reply: false)**: 当话题无关、无聊、或你想结束对话时使用。此时`content`可为空字符串（不回复），或一句简短的结束语/吐槽。"
-                " - **情景感知**: 分析'最近群聊内容'判断当前讨论是否已结束或是一个新开端，结合'完整对话历史'理解前因后果，再做出决策。"
-            )
+            instruction = PROACTIVE_REPLY_INSTRUCTION
             
             # 检查是否启用详细日志
             if self._is_detailed_logging():
@@ -406,7 +1290,8 @@ class GroupChatPluginEnhanced(Star):
                         if self._is_detailed_logging():
                             logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话判断为true但内容为空，继续计时")
                         
-                        await self._start_proactive_check(group_id, unified_msg_origin)
+                        # 重新启动主动插话任务，传递默认的图片拦截状态（True）
+                        await self._start_proactive_check(group_id, unified_msg_origin, True)
                 elif should_reply is False:
                     if content:
                         logger.info(f"[主动插话] LLM判断为 false 但仍回复，内容: {content[:50]}...")
@@ -473,7 +1358,9 @@ class GroupChatPluginEnhanced(Star):
 
         # 1. 启动/重置主动插话任务 (针对整个群聊)
         if self.config.get("enable_proactive_reply", True):
-            await self._start_proactive_check(event.get_group_id(), event.unified_msg_origin)
+            # 传递图片拦截状态，默认为True（处理消息）
+            should_process_message = getattr(event, '_should_process_message', True)
+            await self._start_proactive_check(event.get_group_id(), event.unified_msg_origin, should_process_message)
         
         # 2. 启动/重置沉浸式对话任务 (针对被回复的那个用户)
         # 只有在不是图片消息拦截的情况下才开启沉浸式会话
@@ -490,183 +1377,31 @@ class GroupChatPluginEnhanced(Star):
         # 初始化消息处理标志
         event._should_process_message = True
         
-        # 关键检查点1：在群组权限检查前检查图片拦截标记
-        if not getattr(event, '_should_process_message', True):
-            logger.info(f"[入口检查] 检测到图片消息拦截标记，跳过所有后续处理")
-            # 重置标记为True，以便后续消息能正常处理
-            event._should_process_message = True
-            return
-        
         # 1. 群组权限检查
         if not self.group_list_manager.check_group_permission(group_id):
             return
         
-        # 2. 图片检测逻辑（在所有其他逻辑之前）
-        # 获取图片处理配置
-        image_config = self.config.get("image_processing", {})
-        enable_image_processing = image_config.get("enable_image_processing", False)
-        image_mode = image_config.get("image_mode", "ignore")
+        # ✅ 2. 图片检测逻辑（在所有其他逻辑之前，包括沉浸式会话检查之前）
+        # 第一步：检测@消息图片
+        should_process_message, filtered_message, is_at_image = await self._detect_at_images(event)
         
-        # 添加详细的配置检查日志
-        logger.info(f"[图片检测] 配置检查 - enable_image_processing: {enable_image_processing}, image_mode: {image_mode}")
+        # 如果@消息图片转文字成功，更新消息内容
+        if should_process_message and filtered_message is not None:
+            logger.info(f"[图片检测] @消息图片处理完成，更新消息为: {filtered_message[:100]}...")
+            event.message_str = filtered_message
         
-        # 如果开启了忽略图片功能，检测消息中的图片标识
-        if enable_image_processing and image_mode == "ignore":
-            # 获取消息文本 - 使用增强的消息获取方法
-            message_text = getattr(event, 'message_str', '').strip()
-            if not message_text:
-                # 尝试从其他属性获取消息
-                try:
-                    message_text = str(event.message_obj.raw_message.get("raw_message", "")).strip()
-                except Exception:
-                    message_text = ""
+        # 第二步：处理其他消息图片拦截（只在非@消息图片的情况下）
+        if not is_at_image:
+            should_process_message, filtered_message = await self._intercept_other_images(event, event.message_str)
             
-            # 如果仍然为空，尝试从消息对象直接获取
-            if not message_text:
-                try:
-                    message_text = str(event.message_obj).strip()
-                except Exception:
-                    message_text = ""
+            # 如果其他图片拦截返回False，直接返回
+            if not should_process_message:
+                return
             
-            # 检查是否启用详细日志
-            if self._is_detailed_logging():
-                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 图片检测逻辑开始，消息内容: '{message_text}'")
-            
-            # 首先检查是否是@消息，如果是@消息且启用了@消息图片转文字功能，则跳过图片拦截
-            image_config = self.config.get("image_processing", {})
-            enable_at_image_caption = image_config.get("enable_at_image_caption", False)
-            
-            # 检查消息是否包含@
-            is_at_message = False
-            if enable_at_image_caption:
-                # 检查消息文本中是否包含@符号
-                if "@" in message_text:
-                    is_at_message = True
-                # 检查消息事件中是否有@信息
-                try:
-                    if hasattr(event, 'get_at_users'):
-                        at_users = event.get_at_users()
-                        if at_users and len(at_users) > 0:
-                            is_at_message = True
-                except Exception:
-                    pass
-            
-            if is_at_message and enable_at_image_caption:
-                logger.info(f"[图片检测] 检测到@消息且启用了@消息图片转文字功能，跳过图片拦截")
-                # 不进行图片拦截，让消息继续正常流程，由图片处理器处理
-            else:
-                # 检测消息是否包含图片标识（支持多种格式）
-                is_image_message = (
-                    "[图片]" in message_text or
-                    "[CQ:image" in message_text or
-                    any(ext in message_text for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']) or
-                    "动画表情" in message_text or
-                    "image" in message_text.lower()
-                )
-                
-                if is_image_message:
-                    # 检查是否启用详细日志
-                    if self._is_detailed_logging():
-                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 检测到[图片]标识")
-                    
-                    # 获取图片处理配置（支持嵌套配置结构）
-                    image_config = self.config.get("image_processing", {})
-                    enable_image_processing = image_config.get("enable_image_processing", False)
-                    image_mode = image_config.get("image_mode", "ignore")
-                    
-                    logger.info(f"[图片检测] 图片处理配置 - 启用: {enable_image_processing}, 模式: {image_mode}")
-                
-            # 检测纯图片消息（支持多种图片格式）
-            stripped_message = message_text.strip()
-            is_pure_image = False
-            
-            # 如果是CQ码图片消息，直接判定为纯图片
-            if "[CQ:image" in stripped_message:
-                is_pure_image = True
-                logger.info(f"[图片检测] 检测到CQ码图片消息，判定为纯图片")
-            # 如果是标准[图片]标识
-            elif stripped_message == "[图片]" or (stripped_message.startswith("[图片]") and len(stripped_message.replace("[图片]", "").strip()) == 0):
-                is_pure_image = True
-            # 如果是包含常见图片格式的文件名
-            elif any(ext in stripped_message for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']):
-                # 检查是否只包含图片相关标识
-                temp_text = stripped_message.lower()
-                # 移除图片格式后检查是否还有有效内容
-                for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
-                    temp_text = temp_text.replace(ext, '')
-                # 如果移除图片格式后只剩下空白或常见图片标识，判定为纯图片
-                temp_text = temp_text.strip()
-                if len(temp_text) == 0 or all(keyword in temp_text for keyword in ['cq:', 'image', 'file', 'url']):
-                    is_pure_image = True
-                    logger.info(f"[图片检测] 检测到图片文件消息，判定为纯图片")
-            # 如果是动画表情
-            elif "动画表情" in stripped_message:
-                is_pure_image = True
-                logger.info(f"[图片检测] 检测到动画表情，判定为纯图片")
-            
-            if is_pure_image:
-                    # 检查是否启用详细日志
-                    if self._is_detailed_logging():
-                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 消息仅包含[图片]标识，忽略消息")
-                    
-                    # 根据配置模式处理纯图片消息
-                    if enable_image_processing and image_mode == "ignore":
-                        logger.info(f"[图片检测] 检测到纯图片消息: '{message_text}'，拦截但不清理沉浸式会话")
-                        
-                        # 检查是否存在沉浸式会话
-                        session_key = (event.get_group_id(), event.get_sender_id())
-                        async with self.immersive_lock:
-                            if session_key in self.immersive_sessions:
-                                logger.info(f"[图片检测] 沉浸式会话存在: {session_key}，保持会话继续运行")
-                                # 重置定时器，让沉浸式对话继续有效
-                                session_data = self.immersive_sessions[session_key]
-                                if session_data.get('timer'):
-                                    session_data['timer'].cancel()
-                                    logger.info(f"[图片检测] 已取消当前定时器: {session_key}")
-                                
-                                # 使用配置中的沉浸式对话超时秒数
-                                timeout_seconds = self.config.get("immersive_chat_timeout", 120)
-                                
-                                # 重新启动定时器，保持沉浸式对话有效
-                                session_data['timer'] = asyncio.get_running_loop().call_later(
-                                    timeout_seconds, 
-                                    self._clear_immersive_session, 
-                                    session_key
-                                )
-                                logger.info(f"[图片检测] 已重新启动{timeout_seconds}秒定时器: {session_key}")
-                            else:
-                                logger.info(f"[图片检测] 未找到沉浸式会话: {session_key}")
-                        
-                        logger.info(f"[图片检测] 纯图片消息已拦截，沉浸式会话保持运行")
-                        # 设置标记，让after_bot_message_sent知道这是图片消息拦截
-                        event._is_image_message = True
-                        # 设置消息处理标志为False，防止后续逻辑执行
-                        event._should_process_message = False
-                        
-                        # 关键修复：完全阻止事件传播，确保AI不会被启动
-                        event.stop_event()
-                        return  # 直接忽略消息，不进行后续处理
-                    else:
-                        # 如果配置为direct或caption模式，或者图片处理未启用，则正常处理
-                        logger.info(f"[图片检测] 配置模式为{image_mode}，纯图片消息将正常处理")
-                        # 不进行拦截，让消息继续正常流程
-            else:
-                    # 如果消息包含[图片]标识和其他文字，根据配置模式处理
-                    if enable_image_processing and image_mode == "ignore":
-                        # 混合消息，过滤标识后继续处理
-                        filtered_message = message_text.replace("[图片]", "").strip()
-                        
-                        # 检查是否启用详细日志
-                        if self._is_detailed_logging():
-                            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 消息包含[图片]标识和其他文字，过滤后消息: '{filtered_message}'")
-                        
-                        # 更新事件的消息文本为过滤后的内容
-                        event.message_str = filtered_message
-                        logger.info(f"[图片检测] 检测到包含[图片]标识的消息，已移除标识，过滤后消息: '{filtered_message[:50]}...'")
-                    else:
-                        # direct或caption模式，或者图片处理未启用，保持原消息不变
-                        logger.info(f"[图片检测] 配置模式为{image_mode}，混合消息将正常处理")
-        
+            # 更新过滤后的消息
+            if filtered_message is not None:
+                event.message_str = filtered_message
+
         # 获取原始消息（保留前缀）
         raw_message = ""
         try:
@@ -687,323 +1422,24 @@ class GroupChatPluginEnhanced(Star):
                     self.immersive_sessions.pop(session_key, None)
             return
 
-        # --- 逻辑1: 检查是否触发了沉浸式对话 ---
-        # 首先检查消息处理标志，如果为False则跳过沉浸式对话逻辑
-        if not getattr(event, '_should_process_message', True):
-            logger.info(f"[消息处理] 检测到图片消息拦截，跳过沉浸式对话逻辑，直接进入群聊处理")
-            # 重置标志为True，以便后续消息能正常处理
-            event._should_process_message = True
-            return  # 关键：直接返回，不进入任何后续逻辑
-        
-        # 统一使用元组格式的会话键
+        # ✅ 3. 检查是否触发了沉浸式对话（移到图片检测之后）
         session_key = (event.get_group_id(), event.get_sender_id())
         async with self.immersive_lock:
             session_data = self.immersive_sessions.get(session_key)
         
         if session_data:
-            logger.info(f"[沉浸式对话] 捕获到用户 {event.get_sender_id()} 的连续消息，开始判断是否回复。")
+            # 此时 event.message_str 已经是图片转文字后的内容
+            logger.info(f"[沉浸式对话] 检测到沉浸式会话，消息内容: {event.message_str[:100]}...")
             
-            # 检查是否启用详细日志
-            if self._is_detailed_logging():
-                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 沉浸式对话会话存在，会话键: {session_key}")
-                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 会话数据: 上下文长度={len(session_data.get('context', []))}")
-            
-            # --- 强制图片拦截检查（在沉浸式对话判定中）---
-            # 修复消息获取逻辑，确保能正确获取消息内容
-            message_text = getattr(event, 'message_str', '').strip()
-            if not message_text:
-                # 尝试从其他属性获取消息
-                try:
-                    message_text = str(event.message_obj.raw_message.get("raw_message", "")).strip()
-                except Exception:
-                    message_text = ""
-            
-            # 如果仍然为空，尝试从消息对象直接获取
-            if not message_text:
-                try:
-                    message_text = str(event.message_obj).strip()
-                except Exception:
-                    message_text = ""
-            
-            logger.info(f"[强制图片拦截] 开始检查消息: '{message_text}'")
-            
-            # 首先检查是否已经设置了图片拦截标记
-            if getattr(event, '_should_process_message', True) is False:
-                logger.info(f"[强制图片拦截] 检测到图片消息拦截标记，跳过沉浸式对话")
-                # 重置标记为True，以便后续消息能正常处理
-                event._should_process_message = True
-                return
-            
-            # 首先检查是否是@消息，如果是@消息且启用了@消息图片转文字功能，则跳过图片拦截
-            image_config = self.config.get("image_processing", {})
-            enable_at_image_caption = image_config.get("enable_at_image_caption", False)
-            
-            # 检查消息是否包含@
-            is_at_message = False
-            if enable_at_image_caption:
-                # 检查消息文本中是否包含@符号
-                if "@" in message_text:
-                    is_at_message = True
-                # 检查消息事件中是否有@信息
-                try:
-                    if hasattr(event, 'get_at_users'):
-                        at_users = event.get_at_users()
-                        if at_users and len(at_users) > 0:
-                            is_at_message = True
-                except Exception:
-                    pass
-            
-            if is_at_message and enable_at_image_caption:
-                logger.info(f"[强制图片拦截] 检测到@消息且启用了@消息图片转文字功能，跳过图片拦截")
-                # 不进行图片拦截，让消息继续正常流程，由图片处理器处理
-            else:
-                # 检测消息是否包含图片标识（支持多种格式）
-                is_image_message = (
-                    "[图片]" in message_text or
-                    "[CQ:image" in message_text or
-                    any(ext in message_text for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']) or
-                    "动画表情" in message_text or
-                    "image" in message_text.lower()
-                )
-                
-                if is_image_message:
-                    # 获取图片处理配置（支持嵌套配置结构）
-                    image_config = self.config.get("image_processing", {})
-                    enable_image_processing = image_config.get("enable_image_processing", False)
-                    image_mode = image_config.get("image_mode", "ignore")
-                    
-                    logger.info(f"[强制图片拦截] 图片处理配置 - 启用: {enable_image_processing}, 模式: {image_mode}")
-                    logger.info(f"[强制图片拦截] 完整配置检查: image_config={image_config}")
-                    logger.info(f"[强制图片拦截] 拦截条件: enable_image_processing={enable_image_processing}, image_mode={image_mode}, 条件结果={enable_image_processing and image_mode == 'ignore'}")
-                    
-                    stripped_message = message_text.strip()
-                    
-                    # 检测纯图片消息（支持多种图片格式）
-                    # 纯图片消息的判断标准：消息只包含图片标识，没有其他有效文本内容
-                    is_pure_image = False
-                    
-                    # 如果是CQ码图片消息，直接判定为纯图片
-                    if "[CQ:image" in stripped_message:
-                        is_pure_image = True
-                        logger.info(f"[强制图片拦截] 检测到CQ码图片消息，判定为纯图片")
-                    # 如果是标准[图片]标识
-                    elif stripped_message == "[图片]" or (stripped_message.startswith("[图片]") and len(stripped_message.replace("[图片]", "").strip()) == 0):
-                        is_pure_image = True
-                    # 如果是包含常见图片格式的文件名
-                    elif any(ext in stripped_message for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']):
-                        # 检查是否只包含图片相关标识
-                        temp_text = stripped_message.lower()
-                        # 移除图片格式后检查是否还有有效内容
-                        for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
-                            temp_text = temp_text.replace(ext, '')
-                        # 如果移除图片格式后只剩下空白或常见图片标识，判定为纯图片
-                        temp_text = temp_text.strip()
-                        if len(temp_text) == 0 or all(keyword in temp_text for keyword in ['cq:', 'image', 'file', 'url']):
-                            is_pure_image = True
-                            logger.info(f"[强制图片拦截] 检测到图片文件消息，判定为纯图片")
-                    # 如果是动画表情
-                    elif "动画表情" in stripped_message:
-                        is_pure_image = True
-                        logger.info(f"[强制图片拦截] 检测到动画表情，判定为纯图片")
-                    
-                    logger.info(f"[强制图片拦截] 消息检测: stripped_message='{stripped_message}', is_pure_image={is_pure_image}")
-                    logger.info(f"[强制图片拦截] 检测条件1: stripped_message == '[图片]' = {stripped_message == '[图片]'}")
-                    logger.info(f"[强制图片拦截] 检测条件2: starts_with_and_empty_after = {stripped_message.startswith('[图片]') and len(stripped_message.replace('[图片]', '').strip()) == 0}")
-                    
-                    if is_pure_image:
-                        # 只有在ignore模式下才拦截纯图片消息
-                        if enable_image_processing and image_mode == "ignore":
-                            logger.info(f"[强制图片拦截] 检测到纯图片消息: '{message_text}'，强制判定为不回复")
-                            
-                            # 重置定时器，保持沉浸式对话继续有效
-                            async with self.immersive_lock:
-                                if session_key in self.immersive_sessions:
-                                    session_data = self.immersive_sessions[session_key]
-                                    if session_data.get('timer'):
-                                        session_data['timer'].cancel()
-                                        logger.info(f"[强制图片拦截] 已取消当前定时器: {session_key}")
-                                    
-                                    # 使用配置中的沉浸式对话超时秒数
-                                    timeout_seconds = self.config.get("immersive_chat_timeout", 120)
-                                    
-                                    # 重新启动定时器，保持沉浸式对话有效
-                                    session_data['timer'] = asyncio.get_running_loop().call_later(
-                                        timeout_seconds, 
-                                        self._clear_immersive_session, 
-                                        session_key
-                                    )
-                                    logger.info(f"[强制图片拦截] 已重新启动{timeout_seconds}秒定时器: {session_key}")
-                            
-                            logger.info(f"[强制图片拦截] 纯图片消息已强制拦截，沉浸式会话保持运行，AI不会回复")
-                            return  # 直接返回，不进行LLM判定
-                        else:
-                            # direct或caption模式，或者图片处理未启用，则正常处理
-                            logger.info(f"[强制图片拦截] 配置模式为{image_mode}，纯图片消息将正常处理")
-                    else:
-                        # 混合消息，根据配置模式处理
-                        if enable_image_processing and image_mode == "ignore":
-                            # 混合消息，过滤标识后继续处理
-                            filtered_message = message_text.replace("[图片]", "").strip()
-                            event.message_str = filtered_message
-                            logger.info(f"[强制图片拦截] 混合消息，过滤后: '{filtered_message}'，继续沉浸式对话判定")
-                        else:
-                            # direct或caption模式，或者图片处理未启用，保持原消息不变
-                            logger.info(f"[强制图片拦截] 配置模式为{image_mode}，混合消息将正常处理")
-            
-            # 因为要进行沉浸式回复，所以取消可能存在的、针对全群的主动插话任务
-            async with self.proactive_lock:
-                if group_id in self.active_proactive_timers:
-                    self.active_proactive_timers[group_id].cancel()
-                    logger.debug(f"[沉浸式对话] 已取消群 {group_id} 的主动插话任务。")
-                    
-                    # 检查是否启用详细日志
-                    if self._is_detailed_logging():
-                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 已取消群 {group_id} 的主动插话任务")
-            
-            # 阻止事件继续传播，避免触发默认的LLM回复
-            event.stop_event()
-            
-            # 检查是否启用详细日志
-            if self._is_detailed_logging():
-                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 已阻止事件传播，开始沉浸式对话处理")
-    
-                found_persona = await self._get_persona_info_str(event.unified_msg_origin)
-                
-                saved_context = session_data.get('context', [])
-                user_prompt = event.message_str
-                instruction = (
-                    "你正在与一位用户进行沉浸式对话，需要根据对话历史和人格设定，判断是否要继续回复。"
-                    "【1. 输出格式】必须严格返回```json{\"should_reply\": 布尔值, \"content\": \"字符串\"}```的格式，否则无效。"
-                    "【2. 字段解释】"
-                    " - `should_reply` (布尔值): 决定你是否想主动发起或继续对话。true表示想，false表示不想。"
-                    " - `content` (字符串): 你的回复内容。即使不想继续对话(false)，也可以通过提供内容来发表简短、非引导性的评论。"
-                    "【3. 判断场景】"
-                    " - **想继续对话 (should_reply: true)**: 当用户的话题有趣、与你相关、或你能提供价值时使用。此时`content`应为具体回复。"
-                    " - **不想继续对话 (should_reply: false)**: 当用户的话题无关、无聊、或你想结束对话时使用。此时`content`可为空字符串(不回复)，或一句简短的结束语。"
-                    " - **情景感知**: 这是用户的追问，请结合'完整对话历史'理解前因后果，再做出决策。"
-                )
-        
-                provider = self.context.get_using_provider()
-                if not provider:
-                    logger.warning("[沉浸式对话] 未找到可用的大语言模型提供商。")
-                    return
-
-                # 检查是否启用详细日志
-                if self._is_detailed_logging():
-                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 开始调用LLM进行沉浸式对话决策")
-                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 用户提示长度: {len(user_prompt)}")
-                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 上下文数量: {len(saved_context)}")
-                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 系统提示长度: {len(instruction)}")
-
-                llm_response = await provider.text_chat(
-                    prompt=user_prompt,
-                    contexts=saved_context,
-                    system_prompt=instruction
-                )
-                
-                # 检查是否启用详细日志
-                if self._is_detailed_logging():
-                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM调用完成，响应长度: {len(llm_response.completion_text)}")
-                
-                json_string = self._extract_json_from_text(llm_response.completion_text)
-                
-                # 检查是否启用详细日志
-                if self._is_detailed_logging():
-                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - JSON提取结果: {'成功' if json_string else '失败'}")
-                    if json_string:
-                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 提取的JSON长度: {len(json_string)}")
-            
-                if not json_string:
-                    logger.warning(f"[沉浸式对话] 从LLM回复中未能提取出JSON。原始回复: {llm_response.completion_text}")
-                    if llm_response.completion_text and llm_response.completion_text.strip():
-                        logger.info(f"[沉浸式对话] 使用原始回复内容: {llm_response.completion_text[:100]}...")
-                        message_chain = MessageChain().message(llm_response.completion_text)
-                        await self.context.send_message(event.unified_msg_origin, message_chain)
-                    return
-                
-                try:
-                    decision_data = json.loads(json_string)
-                    should_reply = decision_data.get("should_reply")
-                    content = decision_data.get("content", "")
-                    
-                    # 检查是否启用详细日志
-                    if self._is_detailed_logging():
-                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - JSON解析成功，should_reply={should_reply}, content长度={len(content)}")
-                
-                    if should_reply is True:
-                        if content:
-                            logger.info(f"[沉浸式对话] LLM判断需要回复，内容: {content[:50]}...")
-                            
-                            # 检查是否启用详细日志
-                            if self._is_detailed_logging():
-                                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 沉浸式对话决定回复，内容预览: {content[:100]}")
-                            
-                            message_chain = MessageChain().message(content)
-                            await self.context.send_message(event.unified_msg_origin, message_chain)
-                            # 回复后重新启动沉浸式会话
-                            await self._arm_immersive_session(event)
-                            
-                            # 检查是否启用详细日志
-                            if self._is_detailed_logging():
-                                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 沉浸式回复已发送，会话已重新启动")
-                        else:
-                            logger.info("[沉浸式对话] LLM判断为 true 但内容为空，跳过回复。")
-                            
-                            # 检查是否启用详细日志
-                            if self._is_detailed_logging():
-                                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM判断为true但内容为空，跳过回复")
-                    elif should_reply is False:
-                        if content:
-                            logger.info(f"[沉浸式对话] LLM判断为 false 但仍回复，内容: {content[:50]}...")
-                            
-                            # 检查是否启用详细日志
-                            if self._is_detailed_logging():
-                                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM判断为false但仍回复，内容预览: {content[:100]}")
-                            
-                            message_chain = MessageChain().message(content)
-                            await self.context.send_message(event.unified_msg_origin, message_chain)
-                        else:
-                            logger.info("[沉浸式对话] LLM判断为 false 且无内容，跳过回复与计时。")
-                            
-                            # 检查是否启用详细日志
-                            if self._is_detailed_logging():
-                                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM判断为false且无内容，跳过回复")
-                        # 结束沉浸式对话
-                        async with self.immersive_lock:
-                            if session_key in self.immersive_sessions:
-                                self.immersive_sessions[session_key]['timer'].cancel()
-                                self.immersive_sessions.pop(session_key, None)
-                                
-                                # 检查是否启用详细日志
-                                if self._is_detailed_logging():
-                                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 沉浸式对话会话已结束，会话键: {session_key}")
-                    else:
-                        logger.warning("[沉浸式对话] LLM返回格式异常，跳过处理。")
-                        
-                        # 检查是否启用详细日志
-                        if self._is_detailed_logging():
-                            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM返回格式异常，should_reply值: {should_reply}")
-                except (json.JSONDecodeError, TypeError, AttributeError) as e:
-                    logger.error(f"[沉浸式对话] 解析LLM的JSON回复失败: {e}\n清理后文本: '{json_string}'")
-                    
-                    # 检查是否启用详细日志
-                    if self._is_detailed_logging():
-                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - JSON解析异常: {e}")
-                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 原始JSON字符串: {json_string}")
-
-                return
-
-        # --- 逻辑2: 处理群聊插件的原有逻辑 ---
-        # 关键检查点2：在群聊处理逻辑前检查图片拦截标记
-        if not getattr(event, '_should_process_message', True):
-            logger.info(f"[群聊检查] 检测到图片消息拦截标记，跳过群聊处理逻辑")
-            # 重置标记为True，以便后续消息能正常处理
-            event._should_process_message = True
+            # 使用新抽取的独立方法处理沉浸式会话
+            await self._handle_immersive_session(event, session_key, session_data)
             return
-        
+
+        # ✅ 4. 处理群聊插件的原有逻辑
         # 记录会话标识并确保该群心跳存在
         self.state_manager.set_group_umo(group_id, event.unified_msg_origin)
         self.active_chat_manager.ensure_flow(group_id)
+        
         # 将消息传递给 ActiveChatManager 以进行频率分析
         if group_id in self.active_chat_manager.group_flows:
             self.active_chat_manager.group_flows[group_id].on_message(event)
@@ -1012,14 +1448,14 @@ class GroupChatPluginEnhanced(Star):
         async for result in self._process_group_message(event):
             yield result
 
-        # --- 逻辑3: 收集消息用于主动插话 ---
+        # ✅ 5. 收集消息用于主动插话
         if self.config.get("enable_proactive_reply", True):
             async with self.proactive_lock:
                 if group_id in self.active_proactive_timers:
                     # 只收集非指令消息
                     if not any(raw_message.startswith(prefix) for prefix in command_prefixes):
                         self.group_chat_buffer[group_id].append(f"{event.get_sender_name()}: {event.message_str}")
-
+    
     async def _process_group_message(self, event: AstrMessageEvent):
         """处理群聊消息的核心逻辑（群聊插件原有功能）"""
         group_id = event.get_group_id()
@@ -1223,6 +1659,29 @@ class GroupChatPluginEnhanced(Star):
             f"心跳/冷却: {hb_int}s / {cd_total}s"
         )
         yield event.plain_result(msg)
+
+    async def process_images(self, message_event) -> Dict[str, Any]:
+        """
+        处理消息中的图片
+        
+        Args:
+            message_event: 消息事件对象
+            
+        Returns:
+            Dict包含处理结果:
+            - images: 直接传递的图片列表
+            - captions: 图片转文字的描述列表
+            - has_images: 是否包含图片
+            - filtered_message: 过滤掉图片标识符后的消息文本
+        """
+        
+        # 第一步：先调用@消息图片检测函数，确保@消息的图片不会被拦截
+        at_image_result = await self._detect_and_caption_at_images(message_event)
+        if at_image_result:
+            return at_image_result
+        
+        # 第二步：再调用消息图片拦截函数，处理其他消息的图片
+        return await self._intercept_other_images(message_event)
 
     async def terminate(self):
         """插件终止时的清理工作"""

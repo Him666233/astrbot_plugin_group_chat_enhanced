@@ -15,7 +15,16 @@ class StateManager:
         self.config = config
         
         # 获取数据目录路径
-        self.data_dir = Path(context.get_config().get("data_dir", "data"))
+        data_dir_config = context.get_config().get("data_dir", "data")
+        
+        # 处理数据目录路径，确保使用绝对路径
+        if os.path.isabs(data_dir_config):
+            self.data_dir = Path(data_dir_config)
+        else:
+            # 如果是相对路径，相对于插件根目录
+            plugin_root = Path(__file__).parent.parent
+            self.data_dir = plugin_root / data_dir_config
+        
         self.plugin_data_dir = self.data_dir / "astrbot_plugin_group_chat"
         
         # 确保数据目录存在

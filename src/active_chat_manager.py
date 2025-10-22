@@ -146,7 +146,6 @@ class GroupHeartFlow:
 
         # 方法4：智能@检测
         # 从消息中提取可能的@提及
-        import re
         at_mentions = re.findall(r'@(\w+)', message_str)
         # 详细日志：提取@提及
         if self._is_detailed_logging():
@@ -219,7 +218,7 @@ class GroupHeartFlow:
                 return config_keywords
 
         except Exception as e:
-            print(f"获取人格关键词失败: {e}")
+            logger.warning(f"获取人格关键词失败: {e}")
 
         # 默认关键词（兜底方案）
         return [
@@ -257,7 +256,7 @@ class GroupHeartFlow:
                 keywords.extend([word.lower() for word in prompt_words if len(word) >= 2])
 
         except Exception as e:
-            print(f"提取人格关键词失败: {e}")
+            logger.warning(f"提取人格关键词失败: {e}")
 
         # 去重并返回
         return list(set(keywords)) if keywords else []
@@ -271,7 +270,7 @@ class GroupHeartFlow:
                 return config_contexts
 
         except Exception as e:
-            print(f"获取人格语境词失败: {e}")
+            logger.warning(f"获取人格语境词失败: {e}")
 
         # 默认语境词
         return [
@@ -291,7 +290,7 @@ class GroupHeartFlow:
             if self._is_detailed_logging():
                 logger.debug(f"[活跃聊天管理器] 心跳循环已启动 - 群组: {self.group_id}")
             
-            print(f"已为群组 {self.group_id} 启动心跳")
+            logger.info(f"已为群组 {self.group_id} 启动心跳")
         else:
             # 详细日志：心跳循环已在运行
             if self._is_detailed_logging():
@@ -310,7 +309,7 @@ class GroupHeartFlow:
             if self._is_detailed_logging():
                 logger.debug(f"[活跃聊天管理器] 心跳循环已停止 - 群组: {self.group_id}")
             
-            print(f"已为群组 {self.group_id} 停止心跳")
+            logger.info(f"已为群组 {self.group_id} 停止心跳")
         else:
             # 详细日志：心跳循环未运行
             if self._is_detailed_logging():
@@ -630,7 +629,7 @@ class ActiveChatManager:
             # 1. 从机器人平台API获取当前加入的群组
             # 2. 从配置文件读取
             # 3. 使用机器学习模型预测可能活跃的群组
-            print("未检测到活跃群组，使用默认列表")
+            logger.warning("未检测到活跃群组，使用默认列表")
             active_groups = ["default_group_1", "default_group_2"]
 
         return list(active_groups)

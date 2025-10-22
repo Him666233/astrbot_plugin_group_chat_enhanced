@@ -276,20 +276,17 @@ class ResponseEngine:
         """
         user_id = event.get_sender_id()
         
-        # 处理图片内容（如果启用了图片处理）
-        if hasattr(self, 'image_processor'):
-            processed_result = await self.image_processor.process_images(event)
-            message_content = processed_result.get('processed_text', event.message_str)
-            
-            # 如果图片处理模式是直接传递，添加图片信息到提示词
-            if processed_result.get('image_mode') == 'direct' and processed_result.get('images'):
-                image_info = f"\n【图片信息】消息中包含 {len(processed_result['images'])} 张图片，已直接传递给多模态AI。"
-                message_content += image_info
-            elif processed_result.get('image_mode') == 'caption' and processed_result.get('caption_text'):
-                caption_info = f"\n【图片转述】{processed_result['caption_text']}"
-                message_content += caption_info
-        else:
-            message_content = event.message_str
+        # 处理图片内容
+        processed_result = await self.image_processor.process_images(event)
+        message_content = processed_result.get('processed_text', event.message_str)
+        
+        # 如果图片处理模式是直接传递，添加图片信息到提示词
+        if processed_result.get('image_mode') == 'direct' and processed_result.get('images'):
+            image_info = f"\n【图片信息】消息中包含 {len(processed_result['images'])} 张图片，已直接传递给多模态AI。"
+            message_content += image_info
+        elif processed_result.get('image_mode') == 'caption' and processed_result.get('caption_text'):
+            caption_info = f"\n【图片转述】{processed_result['caption_text']}"
+            message_content += caption_info
         
         # 获取上下文信息，并提供默认值以防止KeyError
         decision_context = willingness_result.get("decision_context", {})
@@ -372,7 +369,7 @@ class ResponseEngine:
             
             # 检查是否需要传递图片给多模态AI
             image_urls = []
-            if hasattr(self, 'image_processor'):
+            if self.image_processor:
                 processed_result = await self.image_processor.process_images(event)
                 if processed_result.get('image_mode') == 'direct' and processed_result.get('images'):
                     image_urls = processed_result.get('images', [])
@@ -456,7 +453,7 @@ class ResponseEngine:
             
             # 检查是否需要传递图片给多模态AI
             image_urls = []
-            if hasattr(self, 'image_processor'):
+            if self.image_processor:
                 processed_result = await self.image_processor.process_images(event)
                 if processed_result.get('image_mode') == 'direct' and processed_result.get('images'):
                     image_urls = processed_result.get('images', [])
@@ -499,20 +496,17 @@ class ResponseEngine:
         """
         user_id = event.get_sender_id()
         
-        # 处理图片内容（如果启用了图片处理）
-        if hasattr(self, 'image_processor'):
-            processed_result = await self.image_processor.process_images(event)
-            message_content = processed_result.get('processed_text', event.message_str)
-            
-            # 如果图片处理模式是直接传递，添加图片信息到提示词
-            if processed_result.get('image_mode') == 'direct' and processed_result.get('images'):
-                image_info = f"\n【图片信息】消息中包含 {len(processed_result['images'])} 张图片，已直接传递给多模态AI。"
-                message_content += image_info
-            elif processed_result.get('image_mode') == 'caption' and processed_result.get('caption_text'):
-                caption_info = f"\n【图片转述】{processed_result['caption_text']}"
-                message_content += caption_info
-        else:
-            message_content = event.message_str
+        # 处理图片内容
+        processed_result = await self.image_processor.process_images(event)
+        message_content = processed_result.get('processed_text', event.message_str)
+        
+        # 如果图片处理模式是直接传递，添加图片信息到提示词
+        if processed_result.get('image_mode') == 'direct' and processed_result.get('images'):
+            image_info = f"\n【图片信息】消息中包含 {len(processed_result['images'])} 张图片，已直接传递给多模态AI。"
+            message_content += image_info
+        elif processed_result.get('image_mode') == 'caption' and processed_result.get('caption_text'):
+            caption_info = f"\n【图片转述】{processed_result['caption_text']}"
+            message_content += caption_info
         
         # 获取上下文信息，并提供默认值
         user_impression = chat_context.get("user_impression", {})

@@ -62,7 +62,7 @@ class FrequencyControl:
                 # 详细日志：成功加载历史数据
                 if self._is_detailed_logging():
                     logger.debug(f"[频率控制器] 成功加载历史数据 - 群组: {self.group_id}")
-                print(f"为群组 {self.group_id} 加载了的历史数据。")
+                logger.info(f"为群组 {self.group_id} 加载了历史数据。")
                 return
 
         # 如果没有历史数据，使用智能默认值（基于群组类型和时间模式）
@@ -214,7 +214,7 @@ class FrequencyControl:
 
         self.state_manager.set(f"frequency_data_{self.group_id}", historical_data)
         self._last_save_time = time.time()
-        print(f"为群组 {self.group_id} 保存了历史数据。")
+        logger.info(f"为群组 {self.group_id} 保存了历史数据。")
 
     def _update_focus(self):
         """根据当前聊天活动与历史基线的对比，更新焦点值。"""
@@ -293,7 +293,7 @@ class FrequencyControl:
         if self._is_detailed_logging():
             logger.debug(f"[频率控制器] @消息增强设置 - 旧增强值: {old_boost:.3f}, 新增强值: {self.at_message_boost:.3f}, 配置值: {self.at_boost_value}")
         
-        print(f"机器人被 @，为群组 {self.group_id} 临时提高焦点。")
+        logger.info(f"机器人被 @，为群组 {self.group_id} 临时提高焦点。")
 
     def get_focus(self) -> float:
         """获取当前的焦点值。"""
