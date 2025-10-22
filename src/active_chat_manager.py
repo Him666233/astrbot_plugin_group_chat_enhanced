@@ -373,6 +373,10 @@ class GroupHeartFlow:
                     await self._send_active_message(umo, content)
                     logger.info(f"[ActiveChat] 群组 {group_id} 主动发送成功")
                     
+                    # 更新心流状态
+                    if self.willingness_calculator and hasattr(self.willingness_calculator, 'on_bot_reply_update'):
+                        await self.willingness_calculator.on_bot_reply_update(event, len(content))
+                    
                     # 详细日志：主动发送成功
                     if self._is_detailed_logging():
                         logger.debug(f"[活跃聊天管理器] 主动发送成功 - 群组: {group_id}")

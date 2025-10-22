@@ -659,3 +659,32 @@ class WillingnessCalculator:
             logger.debug(f"[意愿计算器] 心流门控检查 - 通过检查，群组: {group_id}, 能量: {energy:.3f}")
         
         return True
+
+    async def on_bot_reply_update(self, event: Any, response_length: int):
+        """机器人回复后的状态更新（心流算法）"""
+        group_id = event.get_group_id()
+        if not group_id:
+            return
+
+        # 获取心流状态
+        state = self._hf_get_state(group_id)
+        
+        # 更新最后回复时间
+        state["last_reply_ts"] = time.time()
+        
+        # 根据回复长度消耗能量
+        # 回复越长，消耗能量越多
+        energy_consumption = min(0.2, response_length / 500.0)  # 最多消耗20%能量
+        state["energy"] = max(0.1, state["energy"] - energy_consumption)
+        
+        # 更新连续回复计数
+        state["streak"] = state.get("streak", 0) + 1
+        
+        # 保存状态
+        self._hf_save_state(group_id, state)
+        
+        # 详细日志：心流状态更新
+        if self._is_detailed_logging():
+            logger.debug(f"[意愿计算器] 心流状态更新 - 群组: {group_id}, 回复长度: {response_length}, "
+                       f"能量消耗: {energy_consumption:.3f}, 当前能量: {state['energy']:.3f}, "
+                       f"连续回复: {state['streak']}")

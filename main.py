@@ -1177,6 +1177,12 @@ class GroupChatPluginEnhanced(Star):
                 self.image_interception_states[group_id] = True
                 return
             
+            # 新增检查点：检查是否有强制回复正在进行，防止重复发送消息
+            # 注意：这里需要检查全局的强制回复标记，因为主动插话任务无法访问原始event对象
+            if hasattr(self, '_force_reply_in_progress') and self._force_reply_in_progress:
+                logger.info(f"[主动插话检查] 检测到强制回复正在进行，跳过主动插话逻辑，群组ID: {group_id}")
+                return
+            
             delay = self.config.get("proactive_reply_delay", 8)
             
             # 检查是否启用详细日志
@@ -1436,6 +1442,9 @@ class GroupChatPluginEnhanced(Star):
             return
 
         # ✅ 4. 处理群聊插件的原有逻辑
+        # 关键修改：确保@消息图片也能进入群聊处理流程
+        logger.info(f"[群聊处理] 开始处理消息，is_at_image={is_at_image}, message_str长度={len(event.message_str)}")
+        
         # 记录会话标识并确保该群心跳存在
         self.state_manager.set_group_umo(group_id, event.unified_msg_origin)
         self.active_chat_manager.ensure_flow(group_id)
@@ -1444,6 +1453,7 @@ class GroupChatPluginEnhanced(Star):
         if group_id in self.active_chat_manager.group_flows:
             self.active_chat_manager.group_flows[group_id].on_message(event)
         
+        # ✅ 关键修改：确保@消息图片也能进入群聊处理流程
         # 处理消息
         async for result in self._process_group_message(event):
             yield result
@@ -1465,6 +1475,71 @@ class GroupChatPluginEnhanced(Star):
         if self._is_detailed_logging():
             logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 开始处理群聊消息，群组ID: {group_id}, 用户ID: {user_id}")
             logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 消息内容: {event.message_str[:100] if event.message_str else '空消息'}")
+        
+        # ✅ 新增：检查是否是@消息或唤醒消息（强制触发回复）
+        is_force_reply = getattr(event, 'is_wake', False) or getattr(event, 'is_at_or_wake_command', False)
+        
+        if is_force_reply:
+            logger.info(f"[强制回复] 检测到@消息或唤醒消息，跳过意愿计算，直接调用LLM回复")
+            
+            # ✅ 关键：临时屏蔽主动插话，防止同一条消息发两次
+            # 设置一个全局临时标记，在本次消息处理期间屏蔽主动插话
+            self._force_reply_in_progress = True
+            
+            # 直接生成回复，不进行意愿计算
+            provider = self.context.get_using_provider()
+            if not provider:
+                logger.warning("[强制回复] 未找到可用的大语言模型提供商")
+                # 清除临时标记
+                self._force_reply_in_progress = False
+                return
+            
+            # 获取人设信息
+            found_persona = await self._get_persona_info_str(event.unified_msg_origin)
+            
+            # 获取聊天上下文
+            chat_context = await self.context_analyzer.analyze_chat_context(event)
+            contexts = chat_context.get('messages', [])
+            
+            # 调用LLM
+            try:
+                llm_response = await provider.text_chat(
+                    prompt=event.message_str,
+                    contexts=contexts,
+                    system_prompt=found_persona if found_persona else None
+                )
+                
+                response_content = llm_response.completion_text.strip()
+                
+                if response_content:
+                    logger.info(f"[强制回复] LLM回复成功，内容长度: {len(response_content)}")
+                    
+                    yield event.plain_result(response_content)
+                    
+                    # 更新连续回复计数
+                    self.state_manager.increment_consecutive_response(group_id)
+                    
+                    # 心流算法：回复成功后更新状态
+                    await self.willingness_calculator.on_bot_reply_update(event, len(response_content))
+                    
+                    # ✅ 关键：@消息回复后，启动沉浸式对话
+                    await self._arm_immersive_session(event)
+                    logger.info(f"[强制回复] 已启动沉浸式对话会话")
+                    
+                    # 清除临时标记
+                    self._force_reply_in_progress = False
+                    
+                    return
+                else:
+                    logger.warning("[强制回复] LLM返回了空内容")
+                    # 清除临时标记
+                    self._force_reply_in_progress = False
+                    return
+            except Exception as e:
+                logger.error(f"[强制回复] LLM调用失败: {e}")
+                # 清除临时标记
+                self._force_reply_in_progress = False
+                return
         
         # 获取聊天上下文
         chat_context = await self.context_analyzer.analyze_chat_context(event)
