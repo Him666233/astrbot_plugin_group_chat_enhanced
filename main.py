@@ -780,7 +780,8 @@ class GroupChatPluginEnhanced(Star):
                             logger.debug(f"[图片检测] 普通@格式@用户不包含机器人QQ号: {matches}，机器人QQ号: {bot_qq_number}")
                     else:
                         # 检查@符号后面是否跟着有效的内容（不是空格或标点）
-                        at_pattern = r'@[^\s\p{P}\d]'  # @后面跟着非空格、非标点、非数字的字符
+                        # 修复：使用Python re模块支持的语法，替换\p{P}为具体的标点符号
+                        at_pattern = r'@[^\s\d\.,!?;:\-"\'\[\](){}<>]'  # @后面跟着非空格、非数字、非常见标点的字符
                         if re.search(at_pattern, msg):
                             logger.debug("[图片检测] 检测到有效的@消息格式，但无法确定是否@机器人")
                             # 对于无法确定QQ号的@消息，默认返回False，避免误判
