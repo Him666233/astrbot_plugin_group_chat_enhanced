@@ -1424,6 +1424,18 @@ class GroupChatPluginEnhanced(Star):
                     if isinstance(msg, dict) and msg.get('content', '') not in platform_texts:
                         complete_context.append(msg)
             
+            # 4. 应用上下文数量限制
+            max_context_messages = self.config.get('max_context_messages', -1)
+            if max_context_messages != -1:  # -1表示不限制
+                if max_context_messages == 0:  # 0表示不使用上下文
+                    logger.info(f"[上下文限制] 配置为0，不使用上下文，清空历史记录")
+                    complete_context = []
+                elif max_context_messages > 0 and len(complete_context) > max_context_messages:
+                    # 保留最近的消息，去掉最前面的消息
+                    original_length = len(complete_context)
+                    complete_context = complete_context[-max_context_messages:]
+                    logger.info(f"[上下文限制] 上下文数量({original_length})超过限制({max_context_messages})，保留最近{len(complete_context)}条消息")
+            
             logger.info(f"[沉浸式对话] 完整上下文获取完成，总长度: {len(complete_context)}")
             return complete_context
             
