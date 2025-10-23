@@ -564,58 +564,99 @@ class ImageProcessor:
     
     def _is_at_message(self, message_text: str, message_event) -> bool:
         """
-        检查消息是否包含@
+        检查消息是否为@消息（严格检测，确保真的@了机器人）
         
         Args:
             message_text: 消息文本
             message_event: 消息事件对象
             
         Returns:
-            如果消息包含@，返回True；否则返回False
+            如果消息包含@机器人QQ号，返回True；否则返回False
         """
-        # 方法1：检查原始消息文本中的@标识
-        try:
-            # 获取原始消息文本
-            raw_message_text = None
-            if hasattr(message_event, 'message_str'):
-                raw_message_text = message_event.message_str
-            elif hasattr(message_event, 'get_message_str'):
-                raw_message_text = message_event.get_message_str()
-            
-            if raw_message_text and ("[At:" in raw_message_text or "[CQ:at" in raw_message_text or "@" in raw_message_text):
-                logger.info(f"[_is_at_message] 在原始消息中检测到@标识: {raw_message_text[:100]}")
-                return True
-        except Exception as e:
-            logger.debug(f"检查原始消息@标识时发生错误: {e}")
+        # 获取配置中的机器人QQ号
+        bot_qq_number = self.config.get("bot_qq_number", "").strip()
+        if not bot_qq_number:
+            logger.warning("[严格@检测] 未配置机器人QQ号，@消息检测功能可能无法正常工作")
+            return False
         
-        # 方法2：检查过滤后的消息文本中的@符号
-        if message_text and "@" in message_text:
-            logger.info(f"[_is_at_message] 在过滤消息中检测到@标识: {message_text}")
-            return True
-        
-        # 方法3：检查事件对象中的@信息
+        # 方法1：检查事件对象中的@信息（最可靠）
         try:
-            # 检查是否有被@的用户列表
             if hasattr(message_event, 'get_at_users'):
                 at_users = message_event.get_at_users()
                 if at_users and len(at_users) > 0:
-                    logger.info(f"[_is_at_message] 通过get_at_users检测到@消息: {at_users}")
-                    return True
-        except Exception as e:
-            logger.debug(f"检查get_at_users时发生错误: {e}")
-        
-        # 方法4：检查消息链中是否有@组件
-        try:
-            message_chain = message_event.get_message_chain()
-            if message_chain:
-                for component in message_chain:
-                    if hasattr(component, 'type') and component.type == 'at':
-                        logger.info(f"[_is_at_message] 在消息链中检测到@组件")
+                    # 检查@用户列表中是否包含机器人QQ号
+                    if bot_qq_number in at_users:
+                        logger.debug(f"[严格@检测] 检测到@机器人QQ号: {bot_qq_number}")
                         return True
+                    else:
+                        logger.debug(f"[严格@检测] @用户列表不包含机器人QQ号: {at_users}，机器人QQ号: {bot_qq_number}")
+                        return False
         except Exception as e:
-            logger.debug(f"检查消息链@组件时发生错误: {e}")
+            logger.debug(f"[严格@检测] get_at_users检测失败: {e}")
         
-        logger.info(f"[_is_at_message] 未检测到@消息，原始消息: {raw_message_text[:100] if raw_message_text else '无'}，过滤消息: {message_text}")
+        # 方法2：检查消息文本中的@标识（需要更严格的验证）
+        if message_text:
+            # 检查CQ码格式的@消息
+            if "[CQ:at" in message_text:
+                # 检查CQ码中是否包含机器人QQ号
+                import re
+                cq_at_pattern = r'\[CQ:at,qq=(\d+)\]'
+                matches = re.findall(cq_at_pattern, message_text)
+                if matches:
+                    if bot_qq_number in matches:
+                        logger.debug(f"[严格@检测] 检测到CQ码格式@机器人QQ号: {bot_qq_number}")
+                        return True
+                    else:
+                        logger.debug(f"[严格@检测] CQ码@用户不包含机器人QQ号: {matches}，机器人QQ号: {bot_qq_number}")
+                        return False
+                else:
+                    # 如果没有明确的QQ号，默认认为是有效的@消息
+                    logger.debug("[严格@检测] 检测到CQ码格式@消息，但无法解析QQ号")
+                    return True
+            
+            # 检查[At:格式的@消息
+            elif "[At:" in message_text:
+                # 检查[At:格式中是否包含机器人QQ号
+                at_pattern = r'\[At:(\d+)\]'
+                matches = re.findall(at_pattern, message_text)
+                if matches:
+                    if bot_qq_number in matches:
+                        logger.debug(f"[严格@检测] 检测到[At:格式@机器人QQ号: {bot_qq_number}")
+                        return True
+                    else:
+                        logger.debug(f"[严格@检测] [At:格式@用户不包含机器人QQ号: {matches}，机器人QQ号: {bot_qq_number}")
+                        return False
+                else:
+                    # 如果没有明确的QQ号，默认认为是有效的@消息
+                    logger.debug("[严格@检测] 检测到[At:格式@消息，但无法解析QQ号")
+                    return True
+            
+            # 对于普通的@符号，需要更严格的验证
+            # 避免误判包含@符号但不@机器人的消息
+            if "@" in message_text:
+                # 检查@符号后面是否跟着机器人QQ号
+                import re
+                # 匹配@后跟数字（QQ号）的模式
+                at_qq_pattern = r'@(\d+)'
+                matches = re.findall(at_qq_pattern, message_text)
+                if matches:
+                    if bot_qq_number in matches:
+                        logger.debug(f"[严格@检测] 检测到普通@格式@机器人QQ号: {bot_qq_number}")
+                        return True
+                    else:
+                        logger.debug(f"[严格@检测] 普通@格式@用户不包含机器人QQ号: {matches}，机器人QQ号: {bot_qq_number}")
+                        return False
+                else:
+                    # 检查@符号后面是否跟着有效的内容（不是空格或标点）
+                    at_pattern = r'@[^\s\p{P}\d]'  # @后面跟着非空格、非标点、非数字的字符
+                    if re.search(at_pattern, message_text):
+                        logger.debug("[严格@检测] 检测到有效的@消息格式，但无法确定是否@机器人")
+                        # 对于无法确定QQ号的@消息，默认返回False，避免误判
+                        return False
+                    else:
+                        logger.debug("[严格@检测] @符号后无有效内容，可能是误判")
+        
+        logger.debug("[严格@检测] 未检测到有效的@机器人消息")
         return False
     
     def _combine_captions_with_message(self, message_text: str, captions: List[str]) -> str:

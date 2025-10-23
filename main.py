@@ -272,20 +272,92 @@ class GroupChatPluginEnhanced(Star):
         return images
 
     def _is_at_message(self, message_text: str, message_event) -> bool:
-        """检查消息是否为@消息"""
-        # 检查消息文本中的@标识
-        if message_text and ("[At:" in message_text or "[CQ:at" in message_text or "@" in message_text):
-            return True
+        """检查消息是否为@消息（严格检测，确保真的@了机器人）"""
         
-        # 检查事件对象中的@信息
+        # 获取配置中的机器人QQ号
+        bot_qq_number = self.config.get("bot_qq_number", "").strip()
+        if not bot_qq_number:
+            logger.warning("[严格@检测] 未配置机器人QQ号，@消息检测功能可能无法正常工作")
+            return False
+        
+        # 方法1：检查事件对象中的@信息（最可靠）
         try:
             if hasattr(message_event, 'get_at_users'):
                 at_users = message_event.get_at_users()
                 if at_users and len(at_users) > 0:
-                    return True
-        except Exception:
-            pass
+                    # 检查@用户列表中是否包含机器人QQ号
+                    if bot_qq_number in at_users:
+                        logger.debug(f"[严格@检测] 检测到@机器人QQ号: {bot_qq_number}")
+                        return True
+                    else:
+                        logger.debug(f"[严格@检测] @用户列表不包含机器人QQ号: {at_users}，机器人QQ号: {bot_qq_number}")
+                        return False
+        except Exception as e:
+            logger.debug(f"[严格@检测] get_at_users检测失败: {e}")
         
+        # 方法2：检查消息文本中的@标识（需要更严格的验证）
+        if message_text:
+            # 检查CQ码格式的@消息
+            if "[CQ:at" in message_text:
+                # 检查CQ码中是否包含机器人QQ号
+                import re
+                cq_at_pattern = r'\[CQ:at,qq=(\d+)\]'
+                matches = re.findall(cq_at_pattern, message_text)
+                if matches:
+                    if bot_qq_number in matches:
+                        logger.debug(f"[严格@检测] 检测到CQ码格式@机器人QQ号: {bot_qq_number}")
+                        return True
+                    else:
+                        logger.debug(f"[严格@检测] CQ码@用户不包含机器人QQ号: {matches}，机器人QQ号: {bot_qq_number}")
+                        return False
+                else:
+                    # 如果没有明确的QQ号，默认认为是有效的@消息
+                    logger.debug("[严格@检测] 检测到CQ码格式@消息，但无法解析QQ号")
+                    return True
+            
+            # 检查[At:格式的@消息
+            if "[At:" in message_text:
+                # 检查[At:格式中是否包含机器人QQ号
+                at_pattern = r'\[At:(\d+)\]'
+                matches = re.findall(at_pattern, message_text)
+                if matches:
+                    if bot_qq_number in matches:
+                        logger.debug(f"[严格@检测] 检测到[At:格式@机器人QQ号: {bot_qq_number}")
+                        return True
+                    else:
+                        logger.debug(f"[严格@检测] [At:格式@用户不包含机器人QQ号: {matches}，机器人QQ号: {bot_qq_number}")
+                        return False
+                else:
+                    # 如果没有明确的QQ号，默认认为是有效的@消息
+                    logger.debug("[严格@检测] 检测到[At:格式@消息，但无法解析QQ号")
+                    return True
+            
+            # 对于普通的@符号，需要更严格的验证
+            # 避免误判包含@符号但不@机器人的消息
+            if "@" in message_text:
+                # 检查@符号后面是否跟着机器人QQ号
+                import re
+                # 匹配@后跟数字（QQ号）的模式
+                at_qq_pattern = r'@(\d+)'
+                matches = re.findall(at_qq_pattern, message_text)
+                if matches:
+                    if bot_qq_number in matches:
+                        logger.debug(f"[严格@检测] 检测到普通@格式@机器人QQ号: {bot_qq_number}")
+                        return True
+                    else:
+                        logger.debug(f"[严格@检测] 普通@格式@用户不包含机器人QQ号: {matches}，机器人QQ号: {bot_qq_number}")
+                        return False
+                else:
+                    # 检查@符号后面是否跟着有效的内容（不是空格或标点）
+                    at_pattern = r'@[^\s\p{P}\d]'  # @后面跟着非空格、非标点、非数字的字符
+                    if re.search(at_pattern, message_text):
+                        logger.debug("[严格@检测] 检测到有效的@消息格式，但无法确定是否@机器人")
+                        # 对于无法确定QQ号的@消息，默认返回False，避免误判
+                        return False
+                    else:
+                        logger.debug("[严格@检测] @符号后无有效内容，可能是误判")
+        
+        logger.debug("[严格@检测] 未检测到有效的@机器人消息")
         return False
 
     def _get_message_text(self, message_event) -> str:
@@ -644,24 +716,89 @@ class GroupChatPluginEnhanced(Star):
             logger.debug("[图片检测] @消息图片转文字功能未启用")
             return True, message_text, False
         
-        # ✅ 修改2：更可靠的@消息检测逻辑
+        # ✅ 修改2：更可靠的@消息检测逻辑（严格检测，确保@的是机器人）
         is_at_message = False
+        
+        # 获取配置中的机器人QQ号
+        bot_qq_number = self.config.get("bot_qq_number", "").strip()
+        if not bot_qq_number:
+            logger.warning("[图片检测] 未配置机器人QQ号，@消息检测功能可能无法正常工作")
+            return True, message_text, False
         
         # 检查原始消息和处理后消息
         for msg in [raw_message_text, message_text]:
-            if msg and ("[At:" in msg or "[CQ:at" in msg or "@" in msg):
-                is_at_message = True
-                logger.info(f"[图片检测] 检测到@消息标识: {msg[:50]}")
-                break
+            if msg:
+                # 检查CQ码格式的@消息
+                if "[CQ:at" in msg:
+                    # 检查CQ码中是否包含机器人QQ号
+                    import re
+                    cq_at_pattern = r'\[CQ:at,qq=(\d+)\]'
+                    matches = re.findall(cq_at_pattern, msg)
+                    if matches:
+                        if bot_qq_number in matches:
+                            is_at_message = True
+                            logger.info(f"[图片检测] 检测到CQ码格式@机器人QQ号: {bot_qq_number}")
+                            break
+                        else:
+                            logger.debug(f"[图片检测] CQ码@用户不包含机器人QQ号: {matches}，机器人QQ号: {bot_qq_number}")
+                    else:
+                        # 如果没有明确的QQ号，默认认为是有效的@消息
+                        is_at_message = True
+                        logger.info("[图片检测] 检测到CQ码格式@消息，但无法解析QQ号")
+                        break
+                
+                # 检查[At:格式的@消息
+                elif "[At:" in msg:
+                    # 检查[At:格式中是否包含机器人QQ号
+                    at_pattern = r'\[At:(\d+)\]'
+                    matches = re.findall(at_pattern, msg)
+                    if matches:
+                        if bot_qq_number in matches:
+                            is_at_message = True
+                            logger.info(f"[图片检测] 检测到[At:格式@机器人QQ号: {bot_qq_number}")
+                            break
+                        else:
+                            logger.debug(f"[图片检测] [At:格式@用户不包含机器人QQ号: {matches}，机器人QQ号: {bot_qq_number}")
+                    else:
+                        # 如果没有明确的QQ号，默认认为是有效的@消息
+                        is_at_message = True
+                        logger.info("[图片检测] 检测到[At:格式@消息，但无法解析QQ号")
+                        break
+                
+                # 对于普通的@符号，需要更严格的验证
+                elif "@" in msg:
+                    # 检查@符号后面是否跟着机器人QQ号
+                    import re
+                    at_qq_pattern = r'@(\d+)'
+                    matches = re.findall(at_qq_pattern, msg)
+                    if matches:
+                        if bot_qq_number in matches:
+                            is_at_message = True
+                            logger.info(f"[图片检测] 检测到普通@格式@机器人QQ号: {bot_qq_number}")
+                            break
+                        else:
+                            logger.debug(f"[图片检测] 普通@格式@用户不包含机器人QQ号: {matches}，机器人QQ号: {bot_qq_number}")
+                    else:
+                        # 检查@符号后面是否跟着有效的内容（不是空格或标点）
+                        at_pattern = r'@[^\s\p{P}\d]'  # @后面跟着非空格、非标点、非数字的字符
+                        if re.search(at_pattern, msg):
+                            logger.debug("[图片检测] 检测到有效的@消息格式，但无法确定是否@机器人")
+                            # 对于无法确定QQ号的@消息，默认返回False，避免误判
+                        else:
+                            logger.debug(f"[图片检测] 检测到@符号但无有效内容: {msg[:50]}")
         
-        # 方法3：检查事件对象中的@信息
+        # 方法3：检查事件对象中的@信息（最可靠）
         if not is_at_message:
             try:
                 if hasattr(event, 'get_at_users'):
                     at_users = event.get_at_users()
                     if at_users and len(at_users) > 0:
-                        is_at_message = True
-                        logger.info(f"[图片检测] 通过get_at_users检测到@消息: {at_users}")
+                        # 检查@用户列表中是否包含机器人QQ号
+                        if bot_qq_number in at_users:
+                            is_at_message = True
+                            logger.info(f"[图片检测] 通过get_at_users检测到@机器人QQ号: {bot_qq_number}")
+                        else:
+                            logger.debug(f"[图片检测] @用户列表不包含机器人QQ号: {at_users}，机器人QQ号: {bot_qq_number}")
             except Exception as e:
                 logger.debug(f"[图片检测] get_at_users检测失败: {e}")
         
@@ -1477,10 +1614,22 @@ class GroupChatPluginEnhanced(Star):
             logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 消息内容: {event.message_str[:100] if event.message_str else '空消息'}")
         
         # ✅ 新增：检查是否是@消息或唤醒消息（强制触发回复）
-        is_force_reply = getattr(event, 'is_wake', False) or getattr(event, 'is_at_or_wake_command', False)
+        # 使用更严格的@检测逻辑，确保只有在真正@机器人的情况下才触发强制回复
+        is_wake = getattr(event, 'is_wake', False)
+        is_at_or_wake_command = getattr(event, 'is_at_or_wake_command', False)
+        
+        # 双重验证：除了框架标记外，还需要通过自定义@检测逻辑
+        # 同时考虑普通@消息和带图片的@消息
+        is_at_message = self._is_at_message(event.message_str, event)
+        
+        # 只有当框架标记为True且自定义@检测为True时，才认为是真正的@消息
+        # 注意：is_at_image变量在on_group_message函数中定义，这里无法访问
+        # 因此我们只使用is_at_message进行检测
+        is_force_reply = (is_wake or is_at_or_wake_command) and is_at_message
         
         if is_force_reply:
             logger.info(f"[强制回复] 检测到@消息或唤醒消息，跳过意愿计算，直接调用LLM回复")
+            logger.debug(f"[强制回复] 详细检测结果 - is_wake: {is_wake}, is_at_or_wake_command: {is_at_or_wake_command}, is_at_message: {is_at_message}")
             
             # ✅ 关键：临时屏蔽主动插话，防止同一条消息发两次
             # 设置一个全局临时标记，在本次消息处理期间屏蔽主动插话

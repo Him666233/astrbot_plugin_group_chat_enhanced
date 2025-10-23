@@ -5,6 +5,12 @@
     "default": true,
     "hint": "关闭后，此插件所有功能都将失效。建议在调试或临时禁用插件时使用。"
   },
+  "bot_qq_number": {
+    "description": "机器人QQ号（必填）",
+    "type": "string",
+    "default": "",
+    "hint": "请填写机器人自身的QQ号码。只有当@消息中明确@此QQ号时，才会触发强制回复、@消息处理和沉浸式模式。此配置项必须填写才能正常工作。"
+  },
   "enable_immersive_chat": {
     "description": "启用沉浸式对话功能",
     "type": "bool",
