@@ -2212,6 +2212,15 @@ class GroupChatPluginEnhanced(Star):
         """处理群聊消息的主入口 - 融合两种处理逻辑"""
         group_id = event.get_group_id()
         
+        # ✅ 第一步：在消息处理的最开始添加发送者信息
+        sender_id = event.get_sender_id()
+        sender_name = event.get_sender_name()
+        sender_info = f"[User ID: {sender_id}, Nickname: {sender_name}]"
+        
+        # 如果消息内容不为空，在消息前面添加发送者信息
+        if hasattr(event, 'message_str') and event.message_str:
+            event.message_str = f"{sender_info} {event.message_str}"
+        
         # 初始化消息处理标志
         event._should_process_message = True
         
