@@ -1,3 +1,16 @@
+"""
+群组名单管理器模块
+
+负责管理群组权限，包括白名单和黑名单模式。
+
+版本: 2.0.3
+作者: Him666233
+"""
+
+__version__ = "2.0.3"
+__author__ = "Him666233"
+__description__ = "群组名单管理器模块：负责管理群组权限"
+
 from typing import Any
 
 class GroupListManager:

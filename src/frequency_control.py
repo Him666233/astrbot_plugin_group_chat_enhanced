@@ -1,3 +1,16 @@
+"""
+频率控制模块
+
+负责管理群聊频率控制，包括消息频率分析、焦点值计算、历史数据管理等。
+
+版本: 2.0.3
+作者: Him666233
+"""
+
+__version__ = "2.0.3"
+__author__ = "Him666233"
+__description__ = "频率控制模块：负责管理群聊频率控制"
+
 import time
 from collections import deque
 import random
@@ -8,6 +21,41 @@ import json
 from astrbot.api import logger
 
 class FrequencyControl:
+    # 焦点值调整常量
+    FOCUS_INCREASE_RATE = 0.1  # 焦点值增加速率
+    FOCUS_DECREASE_RATE = 0.05  # 焦点值减少速率
+    SMOOTHING_FACTOR = 0.1  # 平滑因子
+    AT_MESSAGE_BOOST_DECAY = 0.95  # @消息增强衰减率
+    AT_MESSAGE_BOOST_MIN = 0.01  # @消息增强最小值
+    
+    # 触发条件常量
+    AT_MESSAGE_BOOST_THRESHOLD = 0.8  # @消息增强触发阈值
+    MESSAGES_PER_MINUTE_THRESHOLD = 5  # 每分钟消息数触发阈值
+    THRESHOLD_BUFFER_MULTIPLIER = 1.2  # 阈值缓冲倍数
+    
+    # 历史数据限制
+    MAX_HISTORICAL_DAYS = 30  # 最大历史数据天数
+    SAVE_INTERVAL_MESSAGES = 100  # 保存间隔消息数
+    SAVE_INTERVAL_SECONDS = 600  # 保存间隔秒数（10分钟）
+    
+    # 智能默认值范围
+    MORNING_PEAK_MSG_MIN = 25  # 早高峰消息数最小值
+    MORNING_PEAK_MSG_MAX = 45  # 早高峰消息数最大值
+    LUNCH_PEAK_MSG_MIN = 35  # 午间高峰消息数最小值
+    LUNCH_PEAK_MSG_MAX = 55  # 午间高峰消息数最大值
+    EVENING_PEAK_MSG_MIN = 40  # 晚高峰消息数最小值
+    EVENING_PEAK_MSG_MAX = 65  # 晚高峰消息数最大值
+    NIGHT_ACTIVE_MSG_MIN = 45  # 晚上活跃时间消息数最小值
+    NIGHT_ACTIVE_MSG_MAX = 75  # 晚上活跃时间消息数最大值
+    LATE_NIGHT_MSG_MIN = 10  # 深夜消息数最小值
+    LATE_NIGHT_MSG_MAX = 25  # 深夜消息数最大值
+    DAYTIME_MSG_MIN = 8  # 白天其他时间消息数最小值
+    DAYTIME_MSG_MAX = 20  # 白天其他时间消息数最大值
+    
+    # 用户数比例范围
+    USER_RATIO_MIN = 0.6  # 用户数相对于消息数的最小比例
+    USER_RATIO_MAX = 0.8  # 用户数相对于消息数的最大比例
+
     def __init__(self, group_id: str, state_manager: Optional[Any] = None, config: Optional[Any] = None):
         self.group_id = group_id
         self.state_manager = state_manager
@@ -27,8 +75,8 @@ class FrequencyControl:
         self.focus_value = 0.0
         self.last_update_time = time.time()
         self.at_message_boost = 0.0
-        self.at_message_boost_decay = 0.95
-        self.smoothing_factor = 0.1  # 用于平滑焦点值变化的因子
+        self.at_message_boost_decay = self.AT_MESSAGE_BOOST_DECAY
+        self.smoothing_factor = self.SMOOTHING_FACTOR  # 用于平滑焦点值变化的因子
         # 从配置读取参数（如无配置则使用默认）
         self.at_boost_value = float(getattr(self.config, "at_boost_value", 0.5)) if self.config is not None else 0.5
         self.threshold = float(getattr(self.config, "heartbeat_threshold", 0.55)) if self.config is not None else 0.55  # 触发阈值（可运行期调整）
@@ -114,23 +162,23 @@ class FrequencyControl:
         """根据小时获取智能默认消息数。"""
         # 基于真实群聊模式的默认值
         if 7 <= hour <= 9:  # 早高峰（上班、上学时间）
-            return random.uniform(25, 45)
+            return random.uniform(self.MORNING_PEAK_MSG_MIN, self.MORNING_PEAK_MSG_MAX)
         elif 11 <= hour <= 13:  # 午间高峰（午休时间）
-            return random.uniform(35, 55)
+            return random.uniform(self.LUNCH_PEAK_MSG_MIN, self.LUNCH_PEAK_MSG_MAX)
         elif 17 <= hour <= 19:  # 晚高峰（下班时间）
-            return random.uniform(40, 65)
+            return random.uniform(self.EVENING_PEAK_MSG_MIN, self.EVENING_PEAK_MSG_MAX)
         elif 20 <= hour <= 23:  # 晚上活跃时间
-            return random.uniform(45, 75)
+            return random.uniform(self.NIGHT_ACTIVE_MSG_MIN, self.NIGHT_ACTIVE_MSG_MAX)
         elif 0 <= hour <= 2:  # 深夜
-            return random.uniform(10, 25)
+            return random.uniform(self.LATE_NIGHT_MSG_MIN, self.LATE_NIGHT_MSG_MAX)
         else:  # 白天其他时间
-            return random.uniform(8, 20)
+            return random.uniform(self.DAYTIME_MSG_MIN, self.DAYTIME_MSG_MAX)
 
     def _get_smart_default_users(self, hour: int) -> float:
         """根据小时获取智能默认用户数。"""
         # 用户数通常是消息数的0.6-0.8倍
         msg_count = self._get_smart_default_msgs(hour)
-        return msg_count * random.uniform(0.6, 0.8)
+        return msg_count * random.uniform(self.USER_RATIO_MIN, self.USER_RATIO_MAX)
 
     def update_message_rate(self, message_timestamp: float, user_id: str = None):
         """记录一条新消息并更新频率指标。"""
@@ -165,7 +213,7 @@ class FrequencyControl:
             self.hourly_message_counts[hour] = []
 
         # 限制每个小时最多保存30天的历史数据
-        if len(self.hourly_message_counts[hour]) >= 30:
+        if len(self.hourly_message_counts[hour]) >= self.MAX_HISTORICAL_DAYS:
             self.hourly_message_counts[hour].pop(0)
 
         self.hourly_message_counts[hour].append(1)  # 每次调用代表一条消息
@@ -175,7 +223,7 @@ class FrequencyControl:
             self.hourly_user_counts[hour] = []
 
         if user_id:
-            if len(self.hourly_user_counts[hour]) >= 30:
+            if len(self.hourly_user_counts[hour]) >= self.MAX_HISTORICAL_DAYS:
                 self.hourly_user_counts[hour].pop(0)
             self.hourly_user_counts[hour].append(1)  # 每次调用代表一个活跃用户
 
@@ -197,7 +245,7 @@ class FrequencyControl:
             self.daily_stats[date_str]['total_users'] += 1
 
         # 定期保存数据（每10分钟或100条消息保存一次）
-        if len(self.recent_messages) % 100 == 0 or time.time() - getattr(self, '_last_save_time', 0) > 600:
+        if len(self.recent_messages) % self.SAVE_INTERVAL_MESSAGES == 0 or time.time() - getattr(self, '_last_save_time', 0) > self.SAVE_INTERVAL_SECONDS:
             self._save_historical_data()
 
     def _save_historical_data(self):
@@ -240,12 +288,12 @@ class FrequencyControl:
         # 这是一个简化的调整逻辑；后续会进行改进
         target_focus = self.focus_value
         if messages_in_last_minute > historical_msgs * 1.5:
-            target_focus += 0.1 * (delta_time / 60)  # 增加焦点
+            target_focus += self.FOCUS_INCREASE_RATE * (delta_time / 60)  # 增加焦点
             # 详细日志：增加焦点值
             if self._is_detailed_logging():
                 logger.debug(f"[频率控制器] 增加焦点值 - 当前消息数超过历史基线1.5倍, 目标焦点: {target_focus:.3f}")
         else:
-            target_focus -= 0.05 * (delta_time / 60)  # 减少焦点
+            target_focus -= self.FOCUS_DECREASE_RATE * (delta_time / 60)  # 减少焦点
             # 详细日志：减少焦点值
             if self._is_detailed_logging():
                 logger.debug(f"[频率控制器] 减少焦点值 - 当前消息数低于历史基线1.5倍, 目标焦点: {target_focus:.3f}")
@@ -261,7 +309,7 @@ class FrequencyControl:
         # 应用 @ 消息的衰减增强
         old_boost = self.at_message_boost
         self.at_message_boost *= self.at_message_boost_decay
-        if self.at_message_boost < 0.01:
+        if self.at_message_boost < self.AT_MESSAGE_BOOST_MIN:
             self.at_message_boost = 0.0
         
         # 详细日志：@消息增强衰减
@@ -327,23 +375,23 @@ class FrequencyControl:
             logger.debug(f"[频率控制器] 当前焦点值 - 基础焦点: {self.get_focus():.3f}, @增强: {self.at_message_boost:.3f}, 有效焦点: {effective_focus:.3f}, 阈值: {threshold:.3f}")
         
         # 只有当@消息增强值非常高时才快速触发
-        if self.at_message_boost >= 0.8:  # 提高阈值，只有强烈@时才快速触发
+        if self.at_message_boost >= self.AT_MESSAGE_BOOST_THRESHOLD:  # 提高阈值，只有强烈@时才快速触发
             # 详细日志：@消息增强触发
             if self._is_detailed_logging():
-                logger.debug(f"[频率控制器] @消息增强触发 - 增强值: {self.at_message_boost:.3f} >= 0.8, 触发回复")
+                logger.debug(f"[频率控制器] @消息增强触发 - 增强值: {self.at_message_boost:.3f} >= {self.AT_MESSAGE_BOOST_THRESHOLD}, 触发回复")
             return True
             
         # 只有当消息非常活跃时才快速触发（提高消息数量要求）
         messages_in_last_minute = self.get_messages_in_last_minute()
-        if messages_in_last_minute >= 5:  # 从2条提高到5条
+        if messages_in_last_minute >= self.MESSAGES_PER_MINUTE_THRESHOLD:  # 从2条提高到5条
             # 详细日志：消息活跃度触发
             if self._is_detailed_logging():
-                logger.debug(f"[频率控制器] 消息活跃度触发 - 最近1分钟消息数: {messages_in_last_minute} >= 5, 触发回复")
+                logger.debug(f"[频率控制器] 消息活跃度触发 - 最近1分钟消息数: {messages_in_last_minute} >= {self.MESSAGES_PER_MINUTE_THRESHOLD}, 触发回复")
             return True
             
         # 常规路径：比较阈值，但增加更严格的检查
         # 只有当焦点值显著超过阈值时才触发
-        trigger_condition = effective_focus > threshold * 1.2  # 增加20%的缓冲
+        trigger_condition = effective_focus > threshold * self.THRESHOLD_BUFFER_MULTIPLIER  # 增加20%的缓冲
         
         # 详细日志：常规阈值检查结果
         if self._is_detailed_logging():

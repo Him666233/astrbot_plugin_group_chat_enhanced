@@ -1,3 +1,16 @@
+"""
+专注聊天管理器模块
+
+负责管理专注聊天模式，包括兴趣度评估、结构化特征分析、上下文一致性分析等。
+
+版本: 2.0.3
+作者: Him666233
+"""
+
+__version__ = "2.0.3"
+__author__ = "Him666233"
+__description__ = "专注聊天管理器模块：负责管理专注聊天模式"
+
 import time
 from typing import TYPE_CHECKING, Any, Dict
 
@@ -8,6 +21,54 @@ if TYPE_CHECKING:
 
 class FocusChatManager:
     """专注聊天管理器"""
+    
+    # 权重常量定义
+    AT_MESSAGE_WEIGHT = 0.4  # @消息权重
+    MESSAGE_RELEVANCE_WEIGHT = 0.3  # 消息相关性权重
+    USER_IMPRESSION_WEIGHT = 0.3  # 用户印象权重
+    
+    # 结构化特征分析权重
+    STRUCTURAL_WEIGHT = 0.25  # 结构特征权重
+    CONTEXT_WEIGHT = 0.30  # 上下文一致性权重
+    BEHAVIOR_WEIGHT = 0.20  # 用户行为权重
+    FLOW_WEIGHT = 0.15  # 对话流权重
+    TEMPORAL_WEIGHT = 0.10  # 时间相关性权重
+    
+    # 长度特征评分
+    OPTIMAL_LENGTH_SCORE = 0.3  # 适中长度评分
+    SHORT_LENGTH_SCORE = 0.1  # 短消息评分
+    LONG_LENGTH_SCORE = 0.2  # 长消息评分
+    
+    # 标点符号密度评分
+    OPTIMAL_PUNCTUATION_SCORE = 0.3  # 适中标点密度评分
+    HIGH_PUNCTUATION_SCORE = 0.2  # 高标点密度评分
+    
+    # 特殊符号评分
+    AT_SYMBOL_SCORE = 0.4  # @符号评分
+    QUESTION_SCORE = 0.3  # 疑问句评分
+    EMOTION_SCORE = 0.2  # 情感表达评分
+    
+    # 上下文一致性评分
+    CONTINUOUS_DIALOGUE_SCORE = 0.3  # 连续对话评分
+    REPLY_PATTERN_SCORE = 0.2  # 回复模式评分
+    LENGTH_PATTERN_SCORE = 0.2  # 长度模式评分
+    TIME_INTERVAL_5MIN_SCORE = 0.3  # 5分钟内时间间隔评分
+    TIME_INTERVAL_30MIN_SCORE = 0.2  # 30分钟内时间间隔评分
+    
+    # 用户行为模式评分
+    HIGH_FREQUENCY_SCORE = 0.3  # 高频互动用户评分
+    RECENT_ACTIVITY_SCORE = 0.3  # 近期活跃用户评分
+    QUALITY_MESSAGE_SCORE = 0.2  # 消息质量模式评分
+    HIGH_RESPONSE_RATE_SCORE = 0.2  # 高响应率评分
+    
+    # 对话流分析评分
+    CONVERSATION_RHYTHM_SCORE = 0.3  # 对话节奏评分
+    TOPIC_COHERENCE_SCORE = 0.4  # 话题连贯性评分
+    
+    # 时间相关性评分
+    HIGH_TEMPORAL_RELEVANCE_SCORE = 0.8  # 高时间相关性评分
+    MEDIUM_TEMPORAL_RELEVANCE_SCORE = 0.6  # 中等时间相关性评分
+    LOW_TEMPORAL_RELEVANCE_SCORE = 0.3  # 低时间相关性评分
 
     def __init__(self, context: Any, config: Any, state_manager: "StateManager"):
         self.context = context
@@ -32,14 +93,14 @@ class FocusChatManager:
 
         # 1. 检查是否@机器人
         if event.is_at_or_wake_command:
-            interest_score += 0.4
+            interest_score += self.AT_MESSAGE_WEIGHT
             # 详细日志：@机器人加分
             if self._is_detailed_logging():
                 logger.debug(f"[专注聊天管理器] @机器人加分 - 当前分数: {interest_score:.3f}")
 
         # 2. 检查消息相关性
         if self._is_message_relevant(message_content, chat_context):
-            interest_score += 0.3
+            interest_score += self.MESSAGE_RELEVANCE_WEIGHT
             # 详细日志：消息相关性加分
             if self._is_detailed_logging():
                 logger.debug(f"[专注聊天管理器] 消息相关性加分 - 当前分数: {interest_score:.3f}")
@@ -47,7 +108,7 @@ class FocusChatManager:
         # 3. 检查用户印象
         user_impression = self.state_manager.get_user_impression(user_id)
         impression_score = user_impression.get("score", 0.5)
-        interest_score += impression_score * 0.3
+        interest_score += impression_score * self.USER_IMPRESSION_WEIGHT
         # 详细日志：用户印象加分
         if self._is_detailed_logging():
             logger.debug(f"[专注聊天管理器] 用户印象加分 - 印象分数: {impression_score:.3f}, 当前分数: {interest_score:.3f}")
@@ -83,11 +144,11 @@ class FocusChatManager:
 
         # 综合评分（各维度权重可调整）
         total_score = (
-            structural_score * 0.25 +  # 结构特征25%
-            context_score * 0.30 +     # 上下文一致性30%
-            behavior_score * 0.20 +    # 用户行为20%
-            flow_score * 0.15 +        # 对话流15%
-            time_score * 0.10          # 时间相关性10%
+            structural_score * self.STRUCTURAL_WEIGHT +
+            context_score * self.CONTEXT_WEIGHT +
+            behavior_score * self.BEHAVIOR_WEIGHT +
+            flow_score * self.FLOW_WEIGHT +
+            time_score * self.TEMPORAL_WEIGHT
         )
 
         relevance_threshold = getattr(self.context, 'relevance_threshold', 0.6)
@@ -117,17 +178,17 @@ class FocusChatManager:
         # 长度特征（适中长度更可能需要回复）
         length = len(content)
         if 10 <= length <= 150:
-            score += 0.3  # 适中长度
+            score += self.OPTIMAL_LENGTH_SCORE  # 适中长度
             # 详细日志：长度特征加分
             if self._is_detailed_logging():
                 logger.debug(f"[专注聊天管理器] 长度特征加分 - 长度: {length}, 当前分数: {score:.3f}")
         elif length < 10:
-            score += 0.1  # 太短
+            score += self.SHORT_LENGTH_SCORE  # 太短
             # 详细日志：长度特征加分
             if self._is_detailed_logging():
                 logger.debug(f"[专注聊天管理器] 长度特征加分 - 长度: {length}, 当前分数: {score:.3f}")
         else:
-            score += 0.2  # 较长但仍可能重要
+            score += self.LONG_LENGTH_SCORE  # 较长但仍可能重要
             # 详细日志：长度特征加分
             if self._is_detailed_logging():
                 logger.debug(f"[专注聊天管理器] 长度特征加分 - 长度: {length}, 当前分数: {score:.3f}")
@@ -136,19 +197,19 @@ class FocusChatManager:
         punctuation_count = sum(1 for char in content if char in "，。！？；：""''（）【】")
         punctuation_ratio = punctuation_count / length if length > 0 else 0
         if 0.05 <= punctuation_ratio <= 0.25:
-            score += 0.3
+            score += self.OPTIMAL_PUNCTUATION_SCORE
             # 详细日志：标点符号密度加分
             if self._is_detailed_logging():
                 logger.debug(f"[专注聊天管理器] 标点符号密度加分 - 密度: {punctuation_ratio:.3f}, 当前分数: {score:.3f}")
         elif punctuation_ratio > 0.25:
-            score += 0.2
+            score += self.HIGH_PUNCTUATION_SCORE
             # 详细日志：标点符号密度加分
             if self._is_detailed_logging():
                 logger.debug(f"[专注聊天管理器] 标点符号密度加分 - 密度: {punctuation_ratio:.3f}, 当前分数: {score:.3f}")
 
         # 特殊符号分析
         if "@" in content:
-            score += 0.4  # @机器人直接相关
+            score += self.AT_SYMBOL_SCORE  # @机器人直接相关
             # 详细日志：特殊符号加分
             if self._is_detailed_logging():
                 logger.debug(f"[专注聊天管理器] 特殊符号加分 - 包含@符号, 当前分数: {score:.3f}")
@@ -156,7 +217,7 @@ class FocusChatManager:
         # 疑问句特征
         question_indicators = ["吗", "呢", "啊", "吧", "?", "？", "怎么", "什么", "为什么", "怎么"]
         if any(indicator in content for indicator in question_indicators):
-            score += 0.3
+            score += self.QUESTION_SCORE
             # 详细日志：疑问句特征加分
             if self._is_detailed_logging():
                 logger.debug(f"[专注聊天管理器] 疑问句特征加分 - 包含疑问词, 当前分数: {score:.3f}")
@@ -164,7 +225,7 @@ class FocusChatManager:
         # 情感表达特征
         emotion_indicators = ["!", "！", "😊", "😂", "👍", "❤️", "😭", "😤", "🤔"]
         if any(indicator in content for indicator in emotion_indicators):
-            score += 0.2
+            score += self.EMOTION_SCORE
             # 详细日志：情感表达特征加分
             if self._is_detailed_logging():
                 logger.debug(f"[专注聊天管理器] 情感表达特征加分 - 包含情感符号, 当前分数: {score:.3f}")
@@ -209,7 +270,7 @@ class FocusChatManager:
 
         # 检查是否是连续对话
         if recent_users.count(current_user) >= 2:
-            consistency_score += 0.3
+            consistency_score += self.CONTINUOUS_DIALOGUE_SCORE
             # 详细日志：连续对话加分
             if self._is_detailed_logging():
                 logger.debug(f"[专注聊天管理器] 连续对话加分 - 当前用户: {current_user}, 当前分数: {consistency_score:.3f}")
@@ -217,7 +278,7 @@ class FocusChatManager:
         # 检查是否是回复模式
         if len(recent_users) >= 2:
             if recent_users[-2] != current_user:  # 上一条消息不是当前用户发的
-                consistency_score += 0.2
+                consistency_score += self.REPLY_PATTERN_SCORE
                 # 详细日志：回复模式加分
                 if self._is_detailed_logging():
                     logger.debug(f"[专注聊天管理器] 回复模式加分 - 当前分数: {consistency_score:.3f}")
@@ -230,7 +291,7 @@ class FocusChatManager:
             avg_length = sum(recent_lengths) / len(recent_lengths)
             length_diff = abs(current_length - avg_length) / max(avg_length, 1)
             if length_diff < 0.5:  # 长度差异不大
-                consistency_score += 0.2
+                consistency_score += self.LENGTH_PATTERN_SCORE
                 # 详细日志：长度模式加分
                 if self._is_detailed_logging():
                     logger.debug(f"[专注聊天管理器] 长度模式加分 - 当前长度: {current_length}, 平均长度: {avg_length:.1f}, 当前分数: {consistency_score:.3f}")
@@ -242,12 +303,12 @@ class FocusChatManager:
             time_diff = current_time - last_msg_time
 
             if time_diff < 300:  # 5分钟内
-                consistency_score += 0.3
+                consistency_score += self.TIME_INTERVAL_5MIN_SCORE
                 # 详细日志：时间间隔加分（5分钟内）
                 if self._is_detailed_logging():
                     logger.debug(f"[专注聊天管理器] 时间间隔加分（5分钟内）- 间隔: {time_diff:.1f}秒, 当前分数: {consistency_score:.3f}")
             elif time_diff < 1800:  # 30分钟内
-                consistency_score += 0.2
+                consistency_score += self.TIME_INTERVAL_30MIN_SCORE
                 # 详细日志：时间间隔加分（30分钟内）
                 if self._is_detailed_logging():
                     logger.debug(f"[专注聊天管理器] 时间间隔加分（30分钟内）- 间隔: {time_diff:.1f}秒, 当前分数: {consistency_score:.3f}")

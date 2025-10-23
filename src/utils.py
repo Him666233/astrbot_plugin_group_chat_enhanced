@@ -1,3 +1,16 @@
+"""
+工具函数模块
+
+提供各种工具函数，包括消息清理、随机选择、时间格式化、字符串截断等。
+
+版本: 2.0.3
+作者: Him666233
+"""
+
+__version__ = "2.0.3"
+__author__ = "Him666233"
+__description__ = "工具函数模块：提供各种工具函数"
+
 import random
 import re
 from typing import Any, Dict, List

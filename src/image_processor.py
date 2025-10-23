@@ -3,13 +3,20 @@
 """
 图片处理模块
 处理消息中的图片内容，支持直接传递和转文字两种模式
+
+版本: 2.0.3
+作者: Him666233
 """
 
+__version__ = "2.0.3"
+__author__ = "Him666233"
+__description__ = "图片处理模块：处理消息中的图片内容"
+
 import asyncio
-import logging
+import re
 from typing import List, Optional, Dict, Any
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 class ImageProcessor:
@@ -277,7 +284,7 @@ class ImageProcessor:
             # 为每张图片生成描述，参考astrbot_plugin_context_enhancer-main的实现
             captions = []
             for image in images:
-                caption = await self._generate_image_caption_enhanced(image, provider, prompt)
+                caption = await self._generate_image_caption(image, provider, prompt)
                 if caption:
                     captions.append(caption)
             
@@ -427,7 +434,7 @@ class ImageProcessor:
             captions = []
             for i, image in enumerate(images):
                 logger.info(f"[手动识别] 处理第 {i+1} 张图片")
-                caption = await self._generate_image_caption_enhanced(image, provider, prompt)
+                caption = await self._generate_image_caption(image, provider, prompt)
                 if caption:
                     captions.append(caption)
                 else:
@@ -446,49 +453,10 @@ class ImageProcessor:
             logger.error(f"[手动识别] 图片识别过程中出错: {e}", exc_info=True)
             return None
     
-    async def _generate_image_caption(self, image: str, provider, prompt: str, timeout: int = 30) -> Optional[str]:
-        """为单张图片生成文字描述"""
-        
-        # 检查缓存
-        if image in self.caption_cache:
-            if self._is_detailed_logging():
-                logger.debug(f"命中图片描述缓存: {image[:50]}...")
-            return self.caption_cache[image]
-        
-        try:
-            # ✅ 关键修复：参考astrbot_plugin_context_enhancer-main的正确实现
-            # 使用正确的参数格式，避免参数错误
-            logger.info(f"[图片转文字] 开始调用LLM进行图片描述，图片URL: {image[:100]}...")
-            logger.info(f"[图片转文字] 使用提示词: {prompt}")
-            
-            # 正确的调用方式：直接传递prompt和image_urls，不需要其他参数
-            llm_response = await asyncio.wait_for(
-                provider.text_chat(prompt=prompt, image_urls=[image]),
-                timeout=timeout
-            )
-            
-            caption = llm_response.completion_text
-            
-            logger.info(f"[图片转文字] LLM返回结果: {caption}")
-            
-            # 缓存结果
-            if caption:
-                self.caption_cache[image] = caption
-                if self._is_detailed_logging():
-                    logger.debug(f"缓存图片描述: {image[:50]}... -> {caption}")
-            
-            return caption
-            
-        except asyncio.TimeoutError:
-            logger.warning(f"图片转述超时，超过了{timeout}秒")
-            return None
-        except Exception as e:
-            logger.error(f"图片转述失败: {e}", exc_info=True)
-            return None
     
-    async def _generate_image_caption_enhanced(self, image: str, provider, prompt: str, timeout: int = 30) -> Optional[str]:
+    async def _generate_image_caption(self, image: str, provider, prompt: str, timeout: int = 30) -> Optional[str]:
         """
-        增强版图片转文字描述函数，参考astrbot_plugin_context_enhancer-main实现
+        图片转文字描述函数，参考astrbot_plugin_context_enhancer-main实现
         
         Args:
             image: 图片URL或base64数据
@@ -599,7 +567,6 @@ class ImageProcessor:
             # 检查CQ码格式的@消息
             if "[CQ:at" in message_text:
                 # 检查CQ码中是否包含机器人QQ号
-                import re
                 cq_at_pattern = r'\[CQ:at,qq=(\d+)\]'
                 matches = re.findall(cq_at_pattern, message_text)
                 if matches:
@@ -635,7 +602,6 @@ class ImageProcessor:
             # 避免误判包含@符号但不@机器人的消息
             if "@" in message_text:
                 # 检查@符号后面是否跟着机器人QQ号
-                import re
                 # 匹配@后跟数字（QQ号）的模式
                 at_qq_pattern = r'@(\d+)'
                 matches = re.findall(at_qq_pattern, message_text)

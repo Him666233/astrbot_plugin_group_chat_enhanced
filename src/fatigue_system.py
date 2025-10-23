@@ -1,3 +1,16 @@
+"""
+疲劳系统模块
+
+负责管理用户疲劳度，包括疲劳度更新、衰减、惩罚计算等功能。
+
+版本: 2.0.3
+作者: Him666233
+"""
+
+__version__ = "2.0.3"
+__author__ = "Him666233"
+__description__ = "疲劳系统模块：负责管理用户疲劳度"
+
 import time
 from typing import TYPE_CHECKING, Any
 

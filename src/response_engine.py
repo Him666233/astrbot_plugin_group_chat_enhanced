@@ -1,3 +1,16 @@
+"""
+回复引擎模块
+
+负责决定是否回复以及生成回复内容，包括传统的阈值判断和基于LLM的"读空气"判断。
+
+版本: 2.0.3
+作者: Him666233
+"""
+
+__version__ = "2.0.3"
+__author__ = "Him666233"
+__description__ = "回复引擎模块：负责决定是否回复以及生成回复内容"
+
 import time
 from typing import Any, Dict
 
@@ -277,7 +290,8 @@ class ResponseEngine:
         user_id = event.get_sender_id()
         
         # 处理图片内容
-        processed_result = await self.image_processor.process_images(event)
+        # processed_result = await self.image_processor.process_images(event)  # 图片处理功能已整合到main.py中
+        processed_result = {'processed_text': event.message_str, 'image_mode': None, 'images': []}
         message_content = processed_result.get('processed_text', event.message_str)
         
         # 如果图片处理模式是直接传递，添加图片信息到提示词
@@ -369,8 +383,9 @@ class ResponseEngine:
             
             # 检查是否需要传递图片给多模态AI
             image_urls = []
-            if self.image_processor:
-                processed_result = await self.image_processor.process_images(event)
+            if False:  # 图片处理功能已整合到main.py中
+                # processed_result = await self.image_processor.process_images(event)  # 图片处理功能已整合到main.py中
+                processed_result = {'processed_text': event.message_str, 'image_mode': None, 'images': []}
                 if processed_result.get('image_mode') == 'direct' and processed_result.get('images'):
                     image_urls = processed_result.get('images', [])
                     logger.debug(f"ResponseEngine: 直接传递模式，传递 {len(image_urls)} 张图片给多模态AI")
@@ -405,7 +420,6 @@ class ResponseEngine:
                 # 检查是否启用详细日志
                 if self._is_detailed_logging():
                     logger.debug(f"ResponseEngine: 详细日志 - LLM响应对象类型: {type(llm_response).__name__}")
-                    logger.debug(f"ResponseEngine: 详细日志 - LLM响应完成状态: {llm_response.is_completed}")
                     logger.debug(f"ResponseEngine: 详细日志 - LLM响应内容长度: {len(llm_response.completion_text)}")
                 
                 return llm_response.completion_text
@@ -415,7 +429,6 @@ class ResponseEngine:
                 # 检查是否启用详细日志
                 if self._is_detailed_logging():
                     logger.debug(f"ResponseEngine: 详细日志 - LLM响应对象: {llm_response}")
-                    logger.debug(f"ResponseEngine: 详细日志 - LLM响应完成状态: {llm_response.is_completed if llm_response else 'None'}")
                 
                 return ""
             
@@ -453,8 +466,9 @@ class ResponseEngine:
             
             # 检查是否需要传递图片给多模态AI
             image_urls = []
-            if self.image_processor:
-                processed_result = await self.image_processor.process_images(event)
+            if False:  # 图片处理功能已整合到main.py中
+                # processed_result = await self.image_processor.process_images(event)  # 图片处理功能已整合到main.py中
+                processed_result = {'processed_text': event.message_str, 'image_mode': None, 'images': []}
                 if processed_result.get('image_mode') == 'direct' and processed_result.get('images'):
                     image_urls = processed_result.get('images', [])
                     logger.debug(f"ResponseEngine: 直接传递模式，传递 {len(image_urls)} 张图片给多模态AI")
@@ -497,7 +511,8 @@ class ResponseEngine:
         user_id = event.get_sender_id()
         
         # 处理图片内容
-        processed_result = await self.image_processor.process_images(event)
+        # processed_result = await self.image_processor.process_images(event)  # 图片处理功能已整合到main.py中
+        processed_result = {'processed_text': event.message_str, 'image_mode': None, 'images': []}
         message_content = processed_result.get('processed_text', event.message_str)
         
         # 如果图片处理模式是直接传递，添加图片信息到提示词

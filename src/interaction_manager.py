@@ -1,3 +1,16 @@
+"""
+交互管理器模块
+
+负责管理交互模式，包括观察模式、正常模式、专注模式的判断和状态更新。
+
+版本: 2.0.3
+作者: Him666233
+"""
+
+__version__ = "2.0.3"
+__author__ = "Him666233"
+__description__ = "交互管理器模块：负责管理交互模式"
+
 import time
 from typing import Any, Dict
 

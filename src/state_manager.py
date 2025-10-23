@@ -1,3 +1,16 @@
+"""
+状态管理器模块
+
+负责插件状态的持久化存储，包括交互模式、专注目标、疲劳度等状态信息。
+
+版本: 2.0.3
+作者: Him666233
+"""
+
+__version__ = "2.0.3"
+__author__ = "Him666233"
+__description__ = "状态管理器模块：负责插件状态的持久化存储"
+
 import json
 import os
 import time
@@ -14,16 +27,30 @@ class StateManager:
         self.context = context
         self.config = config
         
-        # 获取数据目录路径
-        data_dir_config = context.get_config().get("data_dir", "data")
-        
-        # 处理数据目录路径，确保使用绝对路径
-        if os.path.isabs(data_dir_config):
-            self.data_dir = Path(data_dir_config)
-        else:
-            # 如果是相对路径，相对于插件根目录
-            plugin_root = Path(__file__).parent.parent
-            self.data_dir = plugin_root / data_dir_config
+        # 使用AstrBot标准的数据目录获取方式
+        try:
+            # 尝试使用StarTools.get_data_dir()方法
+            from astrbot.api.star import StarTools
+            if hasattr(StarTools, 'get_data_dir') and callable(getattr(StarTools, 'get_data_dir')):
+                self.data_dir = Path(StarTools.get_data_dir())
+            else:
+                raise AttributeError("StarTools.get_data_dir method not available")
+        except (ImportError, AttributeError, Exception) as e:
+            # 回退方案：使用配置中的数据目录
+            logger.debug(f"使用标准数据目录获取方式失败，使用回退方案: {e}")
+            try:
+                data_dir_config = context.get_config().get("data_dir", "data")
+                if os.path.isabs(data_dir_config):
+                    self.data_dir = Path(data_dir_config)
+                else:
+                    # 如果是相对路径，相对于插件根目录
+                    plugin_root = Path(__file__).parent.parent
+                    self.data_dir = plugin_root / data_dir_config
+            except Exception as config_error:
+                # 最终回退方案：使用默认数据目录
+                logger.debug(f"配置数据目录获取失败，使用默认目录: {config_error}")
+                plugin_root = Path(__file__).parent.parent
+                self.data_dir = plugin_root / "data"
         
         self.plugin_data_dir = self.data_dir / "astrbot_plugin_group_chat"
         

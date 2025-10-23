@@ -1,6 +1,20 @@
+"""
+上下文分析器模块
+
+负责分析聊天上下文，包括对话历史、用户印象、相关记忆等信息。
+
+版本: 2.0.3
+作者: Him666233
+"""
+
+__version__ = "2.0.3"
+__author__ = "Him666233"
+__description__ = "上下文分析器模块：负责分析聊天上下文"
+
 import json
 from typing import TYPE_CHECKING, Any, Dict
 
+from astrbot.api import logger
 from astrbot.api.star import Context
 
 if TYPE_CHECKING:
