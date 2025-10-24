@@ -3,11 +3,11 @@
 
 负责管理群聊频率控制，包括消息频率分析、焦点值计算、历史数据管理等。
 
-版本: 2.0.3
+版本: V2.0.4
 作者: Him666233
 """
 
-__version__ = "2.0.3"
+__version__ = "V2.0.4"
 __author__ = "Him666233"
 __description__ = "频率控制模块：负责管理群聊频率控制"
 
@@ -83,7 +83,13 @@ class FrequencyControl:
 
     def _is_detailed_logging(self) -> bool:
         """检查是否启用详细日志"""
-        return getattr(self.config, "debug", False) if self.config else False
+        try:
+            # 检查配置中的enable_detailed_logging开关
+            if isinstance(self.config, dict):
+                return self.config.get("enable_detailed_logging", False)
+            return getattr(self.config, "enable_detailed_logging", False) if self.config else False
+        except Exception:
+            return False
 
     def load_historical_data(self):
         """从历史数据加载或生成基础数据。"""

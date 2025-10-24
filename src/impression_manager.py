@@ -3,11 +3,11 @@
 
 负责管理用户印象，与 MemoraConnectPlugin 集成获取用户印象摘要。
 
-版本: 2.0.3
+版本: V2.0.4
 作者: Him666233
 """
 
-__version__ = "2.0.3"
+__version__ = "V2.0.4"
 __author__ = "Him666233"
 __description__ = "印象管理器模块：负责管理用户印象"
 

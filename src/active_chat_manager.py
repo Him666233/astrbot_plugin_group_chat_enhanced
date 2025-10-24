@@ -3,11 +3,11 @@
 
 负责管理群组的主动聊天功能，包括心跳循环、频率控制和主动回复触发。
 
-版本: 2.0.3
+版本: V2.0.4
 作者: Him666233
 """
 
-__version__ = "2.0.3"
+__version__ = "V2.0.4"
 __author__ = "Him666233"
 __description__ = "活跃聊天管理器模块：负责管理群组的主动聊天功能"
 
@@ -51,7 +51,13 @@ class GroupHeartFlow:
 
     def _is_detailed_logging(self) -> bool:
         """检查是否启用详细日志"""
-        return getattr(self.plugin_config, "debug", False) if self.plugin_config else False
+        try:
+            # 检查配置中的enable_detailed_logging开关
+            if isinstance(self.plugin_config, dict):
+                return self.plugin_config.get("enable_detailed_logging", False)
+            return getattr(self.plugin_config, "enable_detailed_logging", False) if self.plugin_config else False
+        except Exception:
+            return False
 
     async def _run_loop(self):
         """单个群组的主要主动聊天循环。"""

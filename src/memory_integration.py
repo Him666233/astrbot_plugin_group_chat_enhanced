@@ -3,11 +3,11 @@
 
 负责与 MemoraConnectPlugin 集成，提供记忆回忆功能。
 
-版本: 2.0.3
+版本: V2.0.4
 作者: Him666233
 """
 
-__version__ = "2.0.3"
+__version__ = "V2.0.4"
 __author__ = "Him666233"
 __description__ = "记忆集成模块：负责与 MemoraConnectPlugin 集成"
 

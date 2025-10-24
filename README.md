@@ -131,7 +131,17 @@ pip install -r requirements.txt
     "at_image_caption_prompt": "",         // @消息图片转文字提示词
     "image_caption_provider_id": "",       // 普通图片的转文字服务提供商ID
     "image_caption_prompt": "请直接简短描述这张图片", // 普通图片的转文字提示词
-    "enable_detailed_logging": false        // 启用详细日志输出
+    "enable_detailed_logging": false,       // 启用详细日志输出          
+    "enable_timestamp": false,              // 启用时间戳显示
+    "enable_system_prompt": false,          // 启用系统提示词
+    "custom_prompt": "",                     // 自定义系统提示词
+    "enable_cleanup": false,                // 启用消息清理功能
+    "target_groups": [],                   // 目标群组列表
+    "max_messages": 1000,                    // 最大消息条数限制
+    "enable_tool_prompt": false,             //启用工具提示功能
+    "enable_auto_mention": false,           //启用自动提及机制
+    "enable_keyword_trigger": false,        //启用关键词触发机制
+    "mention_interval": 3600,               //自动提及间隔时间（秒）
   }
 }
 ```
@@ -196,6 +206,24 @@ pip install -r requirements.txt
 - **image_caption_prompt**: 普通图片转文字提示词，可自定义描述格式和内容
 - **enable_detailed_logging**: 启用详细日志输出，调试图片功能时开启
 
+#### ⏰ 时间戳显示配置
+- **enable_timestamp**: 启用时间戳显示，开启后会在每条消息前显示发送时间
+
+#### 💬 系统提示词配置
+- **enable_system_prompt**: 启用系统提示词，开启后会在AI调用前添加额外的系统提示词
+- **custom_prompt**: 自定义系统提示词，输入你想要AI遵守的额外规则和提示词
+
+#### 🧹 消息清理配置
+- **enable_cleanup**: 启用消息清理功能，开启后会自动清理超出限制的聊天记录
+- **target_groups**: 目标群组列表，指定要启用清理功能的群组ID列表
+- **max_messages**: 最大消息条数限制，当本地保存的聊天记录超过此条数时自动删除最旧的消息
+
+#### 🛠️ 工具提示配置
+- **enable_tool_prompt**: 开启后会在机器人调用前自动添加可用工具列表提示词，让机器人了解可调用的工具。启用后机器人可以智能调用平台提供的各种功能工具。
+- **enable_auto_mention**: 开启后会在首次交互或长时间未使用工具时自动触发工具提示。包括：1. 首次与用户交互时自动介绍可用工具；2. 超过配置时间间隔后再次提醒可用工具。
+- **enable_keyword_trigger**: 开启后当用户消息包含工具相关关键词时自动触发工具提示。支持的关键词包括：工具、功能、能做什么、能力、function、tool、capability、help、帮助等。
+- **description**: 设置自动提及工具的时间间隔，单位为秒。默认3600秒（1小时），表示如果超过1小时未提及工具，会再次自动提醒可用工具。
+
 ## 🚀 工作原理
 
 ### 📊 活跃度分析算法
@@ -237,26 +265,80 @@ astrbot_plugin_group_chat_enhanced/
 ├── metadata.yaml             # 📋 插件元数据
 ├── src/
 │   ├── __init__.py           # 📁 包初始化
-│   ├── active_chat_manager.py    # 🎮 主动聊天管理器
-│   ├── context_analyzer.py       # 🔍 上下文分析器
-│   ├── fatigue_system.py         # 😴 疲劳系统
-│   ├── focus_chat_manager.py     # 🎯 专注聊天管理器
-│   ├── frequency_control.py      # 📊 频率控制（历史数据驱动）
-│   ├── group_list_manager.py     # 📋 群组名单管理器
-│   ├── impression_manager.py     # 👤 印象管理器
-│   ├── interaction_manager.py    # 💬 交互模式管理器
-│   ├── memory_integration.py     # 🧠 记忆集成
-│   ├── response_engine.py        # 💬 回复引擎
-│   ├── state_manager.py          # 💾 状态管理器
-│   ├── utils.py                  # 🛠️ 工具函数
+│   ├── active_chat_manager.py    # 🎮 主动聊天管理器（心跳循环、频率控制、主动回复触发）
+│   ├── context_analyzer.py       # 🔍 上下文分析器（对话历史、用户印象、相关记忆分析）
+│   ├── fatigue_system.py         # 😴 疲劳系统（疲劳度更新、衰减、惩罚计算）
+│   ├── focus_chat_manager.py     # 🎯 专注聊天管理器（专注模式判断、兴趣度评估）
+│   ├── frequency_control.py      # 📊 频率控制（历史数据驱动、回复频率限制）
+│   ├── group_list_manager.py     # 📋 群组名单管理器（黑白名单管理、群组过滤）
+│   ├── image_processor.py        # 🖼️ 图片处理器（图片识别、多模式处理、LLM视觉理解）
+│   ├── impression_manager.py     # 👤 印象管理器（用户印象管理、印象评分）
+│   ├── interaction_manager.py    # 💬 交互模式管理器（观察/正常/专注模式判断）
+│   ├── memory_integration.py     # 🧠 记忆集成（记忆系统集成、相关记忆召回）
+│   ├── response_engine.py        # 💬 回复引擎（回复生成、读空气判断）
+│   ├── state_manager.py          # 💾 状态管理器（全局状态管理、数据持久化）
+│   ├── utils.py                  # 🛠️ 工具函数（通用工具、辅助方法）
 │   └── willingness_calculator.py # 🧮 意愿计算器（多维度分析+心流算法）
-│   └── image_processor.py         # 🖼️ 图片处理器（新增）
 └── README.md                 # 📖 本文档
 ```
 
 ### 🔄 数据流
 ```
 消息接收 → 上下文分析 → 活跃度计算 → 意愿评估 → 相关性检测 → 回复决策 → 状态更新
+```
+
+### 🔧 组件功能详解
+
+#### 🎯 核心管理层
+- **<mcfile name="main.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\main.py"></mcfile>** - 主插件入口，负责组件初始化、消息路由、功能协调
+- **<mcfile name="state_manager.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\src\state_manager.py"></mcfile>** - 全局状态管理，负责数据持久化、状态同步
+
+#### 🧠 智能分析层
+- **<mcfile name="context_analyzer.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\src\context_analyzer.py"></mcfile>** - 上下文分析，整合对话历史、用户印象、相关记忆
+- **<mcfile name="willingness_calculator.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\src\willingness_calculator.py"></mcfile>** - 多维度意愿计算，融合心流算法和智能决策
+- **<mcfile name="focus_chat_manager.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\src\focus_chat_manager.py"></mcfile>** - 专注模式管理，评估用户兴趣度，实现深度对话
+
+#### 💬 交互控制层
+- **<mcfile name="active_chat_manager.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\src\active_chat_manager.py"></mcfile>** - 主动聊天管理，实现心跳循环和智能插话
+- **<mcfile name="interaction_manager.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\src\interaction_manager.py"></mcfile>** - 交互模式管理，协调观察/正常/专注模式切换
+- **<mcfile name="response_engine.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\src\response_engine.py"></mcfile>** - 回复引擎，集成读空气功能和智能回复生成
+
+#### 📊 系统优化层
+- **<mcfile name="fatigue_system.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\src\fatigue_system.py"></mcfile>** - 疲劳系统，防止过度回复，保持自然交互节奏
+- **<mcfile name="frequency_control.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\src\frequency_control.py"></mcfile>** - 频率控制，基于历史数据优化回复频率
+
+#### 🖼️ 多媒体处理层
+- **<mcfile name="image_processor.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\src\image_processor.py"></mcfile>** - 图片处理，支持direct/caption/ignore三种模式，集成LLM视觉理解
+
+#### 👤 用户关系层
+- **<mcfile name="impression_manager.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\src\impression_manager.py"></mcfile>** - 印象管理，维护用户印象评分和关系数据
+- **<mcfile name="memory_integration.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\src\memory_integration.py"></mcfile>** - 记忆集成，与外部记忆系统对接，实现长期记忆
+
+#### 📋 群组管理层
+- **<mcfile name="group_list_manager.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\src\group_list_manager.py"></mcfile>** - 群组名单管理，实现黑白名单过滤和群组控制
+
+#### 🛠️ 工具支持层
+- **<mcfile name="utils.py" path="d:\临时3\astrbot_plugin_group_chat_enhanced\src\utils.py"></mcfile>** - 工具函数，提供通用工具和辅助方法
+
+### 🏗️ 架构层次关系
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   应用层 (Application Layer)                 │
+├─────────────────────────────────────────────────────────────┤
+│ 主插件入口 (main.py) - 功能协调和消息路由                    │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                   业务逻辑层 (Business Logic Layer)          │
+├─────────────────────────────────────────────────────────────┤
+│ 智能分析层 │ 交互控制层 │ 系统优化层 │ 多媒体处理层 │ 用户关系层 │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                   数据访问层 (Data Access Layer)            │
+├─────────────────────────────────────────────────────────────┤
+│ 状态管理器 (state_manager.py) - 数据持久化和状态管理         │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ## 🎮 使用示例
@@ -299,6 +381,13 @@ astrbot_plugin_group_chat_enhanced/
 - **群聊主动状态**：在群聊中发送此命令可查看当前群的详细状态信息
 
 ## 📈 版本历史
+
+### v2.0.4 (增强版) - 2025年10月25日
+- 🔒 **修复主动插话和读空气主动对话冲突问题** - 实现互斥控制机制，确保同一时间只有一个主动对话功能运行，防止重复回复
+- ⏰ **新增时间戳显示功能** - 支持在消息中显示时间戳，让机器人能够了解当前时间，做出更精确的判断和更好的对话
+- 💬 **新增系统提示词功能** - 支持自定义系统提示词，可以进一步强调提醒机器人对话的时候的风格内容细节等，解决由于上下文过长导致初始提示词细节遗忘的问题
+- 🧹 **新增消息清理功能** - 支持自动清理群聊消息，防止本地存储数据过大
+- 🛠️ **新增工具自动提醒功能** - 重复进行提醒AI可用的工具，包括官方和其他第三方插件提供的工具，让AI能够在合适的时候进行使用
 
 ### v2.0.3 (增强版) - 2025年10月23日
 - 🔧 **改进整体代码结构强度** -改进整体代码结构样式，使代码结构更加规范，可读性增强，可扩展性提高

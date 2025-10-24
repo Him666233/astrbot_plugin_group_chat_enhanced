@@ -3,11 +3,11 @@
 
 负责管理专注聊天模式，包括兴趣度评估、结构化特征分析、上下文一致性分析等。
 
-版本: 2.0.3
+版本: V2.0.4
 作者: Him666233
 """
 
-__version__ = "2.0.3"
+__version__ = "V2.0.4"
 __author__ = "Him666233"
 __description__ = "专注聊天管理器模块：负责管理专注聊天模式"
 
@@ -77,7 +77,13 @@ class FocusChatManager:
     
     def _is_detailed_logging(self) -> bool:
         """检查是否启用详细日志"""
-        return self.config.get("debug", False)
+        try:
+            # 检查配置中的enable_detailed_logging开关
+            if isinstance(self.config, dict):
+                return self.config.get("enable_detailed_logging", False)
+            return getattr(self.config, "enable_detailed_logging", False) if self.config else False
+        except Exception:
+            return False
 
     async def evaluate_focus_interest(self, event: Any, chat_context: Dict) -> float:
         """评估专注聊天兴趣度"""

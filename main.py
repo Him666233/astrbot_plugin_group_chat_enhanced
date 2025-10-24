@@ -13,29 +13,31 @@ from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 from astrbot.api.provider import LLMResponse
+from astrbot.core.provider.entities import ToolCallMessageSegment, ToolCallsResult, AssistantMessageSegment
+from typing import Dict, List, Optional, Any, AsyncGenerator
 
-# LLM指令常量定义
+# LLM指令常量定义 - 优化版本，直接输出自然文本
 IMMERSIVE_SESSION_INSTRUCTION = (
     "你正在与一位用户进行沉浸式对话，需要根据对话历史和人格设定，判断是否要继续回复。"
-    "【1. 输出格式】必须严格返回```json{\"should_reply\": 布尔值, \"content\": \"字符串\"}```的格式，否则无效。"
-    "【2. 字段解释】"
-    " - `should_reply` (布尔值): 决定你是否想主动发起或继续对话。true表示想，false表示不想。"
-    " - `content` (字符串): 你的回复内容。即使不想继续对话(false)，也可以通过提供内容来发表简短、非引导性的评论。"
-    "【3. 判断场景】"
-    " - **想继续对话 (should_reply: true)**: 当用户的话题有趣、与你相关、或你能提供价值时使用。此时`content`应为具体回复。"
-    " - **不想继续对话 (should_reply: false)**: 当用户的话题无关、无聊、或你想结束对话时使用。此时`content`可为空字符串(不回复)，或一句简短的结束语。"
+    "【输出要求】"
+    " - 如果你想继续对话，请直接给出你的自然回复内容，不要添加任何格式标记。"
+    " - 如果你不想继续对话，请只回复：[DO_NOT_REPLY]"
+    " - 不要使用JSON格式，直接输出自然语言。"
+    "【判断场景】"
+    " - **继续对话**: 当用户的话题有趣、与你相关、或你能提供价值时，直接给出回复。"
+    " - **结束对话**: 当用户的话题无关、无聊、或你想结束对话时，回复[DO_NOT_REPLY]。"
     " - **情景感知**: 这是用户的追问，请结合'完整对话历史'理解前因后果，再做出决策。"
 )
 
 PROACTIVE_REPLY_INSTRUCTION = (
     "你需要根据对话历史和人格设定，判断是否要回复以及回复什么。"
-    "【1. 输出格式】必须严格返回```json{\"should_reply\": 布尔值, \"content\": \"字符串\"}```的格式，否则无效。"
-    "【2. 字段解释】"
-    " - `should_reply` (布尔值): 决定你是否想主动发起或继续对话。true表示想，false表示不想。"
-    " - `content` (字符串): 你的回复内容。即使不想继续对话(false)，也可以通过提供内容来发表简短、非引导性的评论。"
-    "【3. 判断场景】"
-    " - **想继续对话 (should_reply: true)**: 当话题有趣、与你相关、或你能提供价值时使用。此时`content`应为具体回复。"
-    " - **不想继续对话 (should_reply: false)**: 当话题无关、无聊、或你想结束对话时使用。此时`content`可为空字符串（不回复），或一句简短的结束语/吐槽。"
+    "【输出要求】"
+    " - 如果你想主动插话，请直接给出你的自然回复内容，不要添加任何格式标记。"
+    " - 如果你不想插话，请只回复：[DO_NOT_REPLY]"
+    " - 不要使用JSON格式，直接输出自然语言。"
+    "【判断场景】"
+    " - **主动插话**: 当话题有趣、与你相关、或你能提供价值时，直接给出回复。"
+    " - **保持沉默**: 当话题无关、无聊、或你想保持沉默时，回复[DO_NOT_REPLY]。"
     " - **情景感知**: 分析'最近群聊内容'判断当前讨论是否已结束或是一个新开端，结合'完整对话历史'理解前因后果，再做出决策。"
 )
 
@@ -62,7 +64,7 @@ try:
 except ImportError as e:
     logger.warning(f"无法导入部分模块，某些功能可能受限: {e}")
 
-@register("astrbot_plugin_group_chat_enhanced", "qa296", "增强版群聊插件：融合了沉浸式对话和主动插话功能，提供更智能的群聊交互体验。", "2.0.0", "https://github.com/qa296/astrbot_plugin_group_chat")
+@register("astrbot_plugin_group_chat_enhanced", "Him666233", "增强版群聊插件：融合了沉浸式对话和主动插话功能，提供更智能的群聊交互体验。", "V2.0.4", "https://github.com/qa296/astrbot_plugin_group_chat")
 class GroupChatPluginEnhanced(Star):
     _instance = None
     
@@ -124,10 +126,19 @@ class GroupChatPluginEnhanced(Star):
         # 初始化图片拦截状态字典
         self.image_interception_states = {}
         
+        # 初始化主动回复互斥标记，防止主动插话和读空气主动对话同时触发
+        self._proactive_reply_in_progress = {}  # 群组ID -> 是否正在进行主动插话
+        self._air_reading_in_progress = {}     # 群组ID -> 是否正在进行读空气主动对话
+        
         logger.info("增强版群聊插件初始化完成 - 已融合沉浸式对话和主动插话功能")
         
         # 初始化图片处理相关缓存
         self.caption_cache = {}
+        
+        # 初始化工具识别相关缓存
+        self.tool_cache = {}
+        self.last_tool_update = 0
+        self.tool_cache_ttl = 300  # 5分钟缓存时间
         
         # 检查是否启用详细日志
         if self._is_detailed_logging():
@@ -160,6 +171,164 @@ class GroupChatPluginEnhanced(Star):
             return "配置类型非字典"
         except Exception:
             return "无法摘要配置"
+    
+    async def _get_available_tools(self) -> Dict[str, Any]:
+        """获取AstrBot平台可用的工具列表"""
+        current_time = time.time()
+        
+        # 检查缓存是否有效
+        if (current_time - self.last_tool_update < self.tool_cache_ttl and 
+            self.tool_cache):
+            logger.debug("[工具识别] 使用缓存中的工具列表")
+            return self.tool_cache
+        
+        try:
+            # 获取LLM工具管理器
+            tool_manager = self.context.get_llm_tool_manager()
+            if not tool_manager:
+                logger.warning("[工具识别] 无法获取LLM工具管理器")
+                return {}
+            
+            # 获取平台搜索配置信息
+            platform_search_config = {}
+            try:
+                # 尝试获取当前会话的配置
+                cfg = self.context.get_config()
+                if cfg:
+                    prov_settings = cfg.get("provider_settings", {})
+                    websearch_enable = prov_settings.get("web_search", False)
+                    provider = prov_settings.get("websearch_provider", "default")
+                    
+                    platform_search_config = {
+                        "websearch_enable": websearch_enable,
+                        "websearch_provider": provider,
+                        "has_search_config": True
+                    }
+                    logger.info(f"[搜索适配] 平台搜索配置: 启用={websearch_enable}, 提供商={provider}")
+                else:
+                    platform_search_config = {
+                        "websearch_enable": False,
+                        "websearch_provider": "default",
+                        "has_search_config": False
+                    }
+                    logger.info("[搜索适配] 无法获取平台配置，使用默认配置")
+            except Exception as config_error:
+                logger.warning(f"[搜索适配] 获取平台搜索配置失败: {config_error}")
+                platform_search_config = {
+                    "websearch_enable": False,
+                    "websearch_provider": "default",
+                    "has_search_config": False
+                }
+            
+            # 获取所有已激活的工具
+            active_tools = []
+            for tool in tool_manager.func_list:
+                if tool.active:
+                    tool_info = {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                        "origin": tool.origin or "official"
+                    }
+                    active_tools.append(tool_info)
+            
+            # 按来源分类工具
+            official_tools = [tool for tool in active_tools if tool["origin"] == "official"]
+            plugin_tools = [tool for tool in active_tools if tool["origin"] != "official"]
+            
+            # 构建工具信息结构
+            tools_info = {
+                "official_tools": official_tools,
+                "plugin_tools": plugin_tools,
+                "total_count": len(active_tools),
+                "official_count": len(official_tools),
+                "plugin_count": len(plugin_tools),
+                "last_updated": current_time,
+                "platform_search_config": platform_search_config
+            }
+            
+            # 更新缓存
+            self.tool_cache = tools_info
+            self.last_tool_update = current_time
+            
+            logger.info(f"[工具识别] 成功获取工具列表: 官方工具{len(official_tools)}个, 插件工具{len(plugin_tools)}个")
+            return tools_info
+            
+        except Exception as e:
+            logger.error(f"[工具识别] 获取工具列表时出错: {e}")
+            return {}
+    
+    def _format_tools_prompt(self, tools_info: Dict[str, Any]) -> str:
+        """格式化工具信息为AI可理解的提示词"""
+        # 使用新的搜索适配版本
+        return self._format_tools_prompt_with_search_adapter(tools_info)
+    
+    async def _should_include_tools_prompt(self, event: AstrMessageEvent) -> bool:
+        """判断是否应该在当前消息中包含工具提示
+        
+        配置示例（在config.json中添加）：
+        {
+            "tool_prompt": {
+                "enable_tool_prompt": true,           // 是否启用工具提示功能
+                "enable_auto_mention": true,          // 是否启用自动提及（首次交互/定时提及）
+                "enable_keyword_trigger": true,        // 是否启用关键词触发
+                "mention_interval": 3600              // 自动提及间隔（秒），默认1小时
+            }
+        }
+        """
+        try:
+            # 检查配置是否启用工具提示
+            if isinstance(self.config, dict):
+                tool_prompt_config = self.config.get("tool_prompt", {})
+                enable_tool_prompt = tool_prompt_config.get("enable_tool_prompt", True)
+                if not enable_tool_prompt:
+                    return False
+                
+                # 获取配置参数
+                mention_interval = tool_prompt_config.get("mention_interval", 3600)  # 默认1小时
+                enable_auto_mention = tool_prompt_config.get("enable_auto_mention", True)
+                enable_keyword_trigger = tool_prompt_config.get("enable_keyword_trigger", True)
+            else:
+                # 默认配置
+                mention_interval = 3600
+                enable_auto_mention = True
+                enable_keyword_trigger = True
+            
+            # 关键词触发
+            if enable_keyword_trigger:
+                message_text = event.message_str.lower()
+                tool_keywords = ["工具", "功能", "能做什么", "能力", "function", "tool", "capability", "help", "帮助"]
+                
+                # 如果消息明确询问工具相关的内容
+                if any(keyword in message_text for keyword in tool_keywords):
+                    logger.info(f"[工具识别] 检测到工具相关关键词，触发工具提示")
+                    return True
+            
+            # 自动提及机制
+            if enable_auto_mention:
+                # 检查是否是首次交互或长时间未使用工具
+                session_key = (event.get_group_id(), event.get_sender_id())
+                last_tool_mention = getattr(self, '_last_tool_mention', {})
+                
+                current_time = time.time()
+                if session_key not in last_tool_mention:
+                    last_tool_mention[session_key] = current_time
+                    self._last_tool_mention = last_tool_mention
+                    logger.info(f"[工具识别] 首次交互，触发工具提示")
+                    return True
+                
+                # 如果超过配置时间未提及工具，再次提及
+                if current_time - last_tool_mention[session_key] > mention_interval:
+                    last_tool_mention[session_key] = current_time
+                    self._last_tool_mention = last_tool_mention
+                    logger.info(f"[工具识别] 超过{mention_interval}秒未提及工具，触发工具提示")
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.warning(f"[工具识别] 判断是否包含工具提示时出错: {e}")
+            return False
 
     def _extract_images(self, message_event) -> List[str]:
         """提取消息中的图片"""
@@ -310,6 +479,18 @@ class GroupChatPluginEnhanced(Star):
         
         # 方法2：检查消息文本中的@标识（需要更严格的验证）
         if message_text:
+            # 首先检查是否配置了机器人名字，如果配置了则进行名字检测
+            bot_name = self.config.get("bot_name", "").strip()
+            if bot_name:
+                # 检测@符号后紧挨着机器人名字的情况（支持括号等特殊字符）
+                at_name_pattern1 = r'@' + re.escape(bot_name) + r'(?=\s|$|[^\w\u4e00-\u9fa5])'  # @后紧挨着名字，后面是空格、结束符或非字母数字中文
+                # 检测@符号后隔一个空格跟着机器人名字的情况
+                at_name_pattern2 = r'@\s+' + re.escape(bot_name) + r'(?=\s|$|[^\w\u4e00-\u9fa5])'
+                
+                if re.search(at_name_pattern1, message_text) or re.search(at_name_pattern2, message_text):
+                    logger.debug(f"[严格@检测] 检测到@机器人名字: {bot_name}")
+                    return True
+            
             # 检查CQ码格式的@消息
             if "[CQ:at" in message_text:
                 # 检查CQ码中是否包含机器人QQ号
@@ -593,75 +774,223 @@ class GroupChatPluginEnhanced(Star):
             logger.error(f"手动识别图片时出错: {e}", exc_info=True)
             return None
 
-    async def _handle_json_extraction_failure(self, completion_text: str, unified_msg_origin: str, context: str):
+    async def _handle_response_fallback(self, completion_text: str, unified_msg_origin: str, context: str):
         """
-        统一处理JSON提取失败的情况
+        优化版本：简化响应处理，提升性能
         
         Args:
             completion_text: LLM的原始回复文本
             unified_msg_origin: 消息来源标识
             context: 上下文描述（用于日志）
         """
-        logger.warning(f"[{context}] 从LLM回复中未能提取出JSON。原始回复: {completion_text}")
+        logger.warning(f"[{context}] 处理LLM回复失败，尝试备用方案。原始回复: {completion_text}")
         
-        # 检查是否有有效的回复内容
+        # 简化处理：直接检查是否包含有效回复内容
         if completion_text and completion_text.strip():
-            # 检查是否包含有意义的内容（不是纯JSON格式错误信息）
-            if not any(keyword in completion_text.lower() for keyword in ['json', 'format', 'error', 'invalid']):
-                logger.info(f"[{context}] 使用原始回复内容: {completion_text[:100]}...")
-                message_chain = MessageChain().message(completion_text)
+            trimmed_text = completion_text.strip()
+            
+            # 快速检查：如果是纯JSON格式，尝试简单提取
+            if trimmed_text.startswith('{') and trimmed_text.endswith('}'):
+                try:
+                    json_data = json.loads(trimmed_text)
+                    if 'content' in json_data and json_data['content']:
+                        reply_content = str(json_data['content']).strip()
+                        if reply_content:
+                            logger.info(f"[{context}] 从JSON中提取到回复内容: {reply_content[:100]}...")
+                            message_chain = MessageChain().message(reply_content)
+                            await self.context.send_message(unified_msg_origin, message_chain)
+                            return
+                except:
+                    pass
+            
+            # 如果不是JSON格式或提取失败，直接使用原始内容
+            # 过滤掉明显的错误标记
+            if not any(keyword in trimmed_text.lower() for keyword in ['json', 'format', 'error', 'invalid', 'should_reply']):
+                logger.info(f"[{context}] 使用原始回复内容: {trimmed_text[:100]}...")
+                message_chain = MessageChain().message(trimmed_text)
                 await self.context.send_message(unified_msg_origin, message_chain)
-            else:
-                logger.warning(f"[{context}] LLM回复包含格式错误信息，跳过发送")
-        else:
-            logger.warning(f"[{context}] LLM回复为空，跳过发送")
+                return
+        
+        logger.warning(f"[{context}] LLM回复为空或无效，跳过发送")
 
     def _extract_json_from_text(self, text: str) -> str:
-        """从文本中提取JSON内容（来自直接回复插件）"""
+        """从文本中提取JSON内容（增强版，支持多种格式）"""
+        if not text or not text.strip():
+            return ""
+        
+        trimmed_text = text.strip()
+        
+        # 策略0：检查整个文本是否是有效的JSON（针对纯JSON格式）
+        if trimmed_text.startswith('{') and trimmed_text.endswith('}'):
+            try:
+                json.loads(trimmed_text)
+                return trimmed_text
+            except:
+                pass
+        
         # 策略1：寻找被 ```json ... ``` 包裹的代码块
         json_block_pattern = r'```json\s*(\{.*?\})\s*```'
         match = re.search(json_block_pattern, text, re.DOTALL)
         if match:
-            return match.group(1).strip()
+            json_content = match.group(1).strip()
+            try:
+                json.loads(json_content)
+                return json_content
+            except:
+                pass
 
         # 策略2：寻找被 ``` ... ``` 包裹的代码块（不指定语言）
         generic_block_pattern = r'```\s*(\{.*?\})\s*```'
         match = re.search(generic_block_pattern, text, re.DOTALL)
         if match:
-            return match.group(1).strip()
+            json_content = match.group(1).strip()
+            try:
+                json.loads(json_content)
+                return json_content
+            except:
+                pass
 
-        # 策略3：寻找被 ```json 和 ``` 包裹的多行代码块
+        # 策略3：寻找被 ```json 和 ``` 包裹的多行代码块（支持换行和缩进）
         multiline_json_pattern = r'```json\s*([\s\S]*?)\s*```'
         match = re.search(multiline_json_pattern, text, re.DOTALL)
         if match:
-            return match.group(1).strip()
+            json_content = match.group(1).strip()
+            try:
+                json.loads(json_content)
+                return json_content
+            except:
+                # 尝试清理JSON内容
+                json_content = re.sub(r'\s+', ' ', json_content)  # 合并多余空格
+                try:
+                    json.loads(json_content)
+                    return json_content
+                except:
+                    pass
 
-        # 策略4：寻找被 ``` 和 ``` 包裹的多行代码块（不指定语言）
+        # 策略4：寻找被 ``` 和 ``` 包裹的多行代码块（不指定语言，支持换行和缩进）
         multiline_generic_pattern = r'```\s*([\s\S]*?)\s*```'
         match = re.search(multiline_generic_pattern, text, re.DOTALL)
         if match:
-            return match.group(1).strip()
+            json_content = match.group(1).strip()
+            if json_content.startswith('{') and json_content.endswith('}'):
+                try:
+                    json.loads(json_content)
+                    return json_content
+                except:
+                    # 尝试清理JSON内容
+                    json_content = re.sub(r'\s+', ' ', json_content)
+                    try:
+                        json.loads(json_content)
+                        return json_content
+                    except:
+                        pass
 
-        # 策略5：寻找第一个 { 和最后一个 } 之间的所有内容
+        # 策略5：寻找第一个 { 和最后一个 } 之间的所有内容（增强版）
         start = text.find("{")
         if start != -1:
             brace_count = 0
+            json_start = -1
+            
             for i in range(start, len(text)):
                 if text[i] == '{':
+                    if brace_count == 0:
+                        json_start = i
                     brace_count += 1
                 elif text[i] == '}':
                     brace_count -= 1
-                    if brace_count == 0:
-                        return text[start:i+1].strip()
+                    if brace_count == 0 and json_start != -1:
+                        json_content = text[json_start:i+1].strip()
+                        try:
+                            json.loads(json_content)
+                            return json_content
+                        except:
+                            pass
         
-        # 策略6：如果所有策略都失败，尝试直接解析整个文本
+        # 策略6：使用更灵活的正则表达式匹配JSON对象
+        json_patterns = [
+            r'\{\s*"should_reply"\s*:\s*(?:true|false)\s*,\s*"content"\s*:\s*"[^"]*"\s*\}',  # 标准格式
+            r'\{\s*"content"\s*:\s*"[^"]*"\s*,\s*"should_reply"\s*:\s*(?:true|false)\s*\}',  # 字段顺序不同
+            r'\{\s*"should_reply"\s*:\s*(?:true|false)\s*\}',  # 只有should_reply
+            r'\{\s*"content"\s*:\s*"[^"]*"\s*\}'  # 只有content
+        ]
+        
+        for pattern in json_patterns:
+            match = re.search(pattern, text, re.DOTALL)
+            if match:
+                json_content = match.group(0).strip()
+                try:
+                    json.loads(json_content)
+                    return json_content
+                except:
+                    pass
+        
+        # 策略7：如果所有策略都失败，尝试直接解析整个文本
         try:
-            json.loads(text.strip())
-            return text.strip()
+            json.loads(trimmed_text)
+            return trimmed_text
         except:
             pass
             
         return ""
+
+    async def _extract_and_filter_json(self, text: str, event: AstrMessageEvent) -> str:
+        """从文本中提取JSON并过滤，返回纯文本内容（用于非沉浸式对话模式）"""
+        if not text or not text.strip():
+            return text
+        
+        # 提取JSON内容
+        json_string = self._extract_json_from_text(text)
+        
+        if json_string:
+            logger.info(f"[非沉浸式对话] JSON提取成功，内容预览: {json_string[:100]}")
+            
+            try:
+                # 解析JSON
+                decision_data = json.loads(json_string)
+                content = decision_data.get("content", "")
+                
+                if content:
+                    # 检查是否启用详细日志
+                    if self._is_detailed_logging():
+                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 非沉浸式对话JSON解析成功，content长度={len(content)}")
+                    
+                    # 过滤掉JSON结构，只保留content内容
+                    # 需要移除整个JSON结构，包括可能的代码块标记
+                    filtered_text = text
+                    
+                    # 策略1：如果JSON被代码块包裹，移除整个代码块
+                    if "```json" in text and "```" in text:
+                        # 使用正则表达式匹配整个代码块
+                        code_block_pattern = r'```json\s*\{[\s\S]*?\}\s*```'
+                        filtered_text = re.sub(code_block_pattern, "", text, flags=re.DOTALL).strip()
+                    else:
+                        # 策略2：直接移除JSON内容
+                        filtered_text = text.replace(json_string, "").strip()
+                    
+                    # 如果过滤后还有内容，可能是自然语言部分，需要合并
+                    if filtered_text:
+                        # 检查content是否已经在过滤后的文本中，避免重复
+                        if content not in filtered_text:
+                            final_content = content + "\n" + filtered_text
+                        else:
+                            final_content = filtered_text
+                    else:
+                        final_content = content
+                    
+                    logger.info(f"[非沉浸式对话] JSON过滤完成，最终内容长度: {len(final_content)}")
+                    return final_content
+                else:
+                    logger.warning("[非沉浸式对话] JSON中content字段为空")
+                    return text
+                    
+            except Exception as e:
+                logger.error(f"[非沉浸式对话] JSON解析失败: {e}")
+                # JSON解析失败，返回原始文本
+                return text
+        else:
+            # 没有检测到JSON，返回原始文本
+            logger.debug("[非沉浸式对话] 未检测到JSON结构，使用原始回复")
+            return text
 
     async def _arm_immersive_session(self, event: AstrMessageEvent):
         """当机器人回复后，为目标用户启动一个限时的沉浸式会话。"""
@@ -731,10 +1060,10 @@ class GroupChatPluginEnhanced(Star):
         # 首先检查是否配置了机器人名字，如果配置了则进行名字检测
         bot_name = self.config.get("bot_name", "").strip()
         if bot_name:
-            # 检测@符号后紧挨着机器人名字的情况
-            at_name_pattern1 = r'@' + re.escape(bot_name) + r'(?![\w\u4e00-\u9fa5])'  # @后紧挨着名字，后面不是字母、数字、中文
+            # 检测@符号后紧挨着机器人名字的情况（支持括号等特殊字符）
+            at_name_pattern1 = r'@' + re.escape(bot_name) + r'(?=\s|$|[^\w\u4e00-\u9fa5])'  # @后紧挨着名字，后面是空格、结束符或非字母数字中文
             # 检测@符号后隔一个空格跟着机器人名字的情况
-            at_name_pattern2 = r'@\s+' + re.escape(bot_name) + r'(?![\w\u4e00-\u9fa5])'
+            at_name_pattern2 = r'@\s+' + re.escape(bot_name) + r'(?=\s|$|[^\w\u4e00-\u9fa5])'
             
             if re.search(at_name_pattern1, message_text) or re.search(at_name_pattern2, message_text):
                 logger.info(f"[图片检测] 检测到@机器人名字: {bot_name}")
@@ -814,10 +1143,10 @@ class GroupChatPluginEnhanced(Star):
             if not message_text:
                 message_text = self._get_raw_message_text(event)
             
-            # 检测@符号后紧挨着机器人名字的情况
-            at_name_pattern1 = r'@' + re.escape(bot_name) + r'(?![\w\u4e00-\u9fa5])'  # @后紧挨着名字，后面不是字母、数字、中文
+            # 检测@符号后紧挨着机器人名字的情况（支持括号等特殊字符）
+            at_name_pattern1 = r'@' + re.escape(bot_name) + r'(?=\s|$|[^\w\u4e00-\u9fa5])'  # @后紧挨着名字，后面是空格、结束符或非字母数字中文
             # 检测@符号后隔一个空格跟着机器人名字的情况
-            at_name_pattern2 = r'@\s+' + re.escape(bot_name) + r'(?![\w\u4e00-\u9fa5])'
+            at_name_pattern2 = r'@\s+' + re.escape(bot_name) + r'(?=\s|$|[^\w\u4e00-\u9fa5])'
             
             if re.search(at_name_pattern1, message_text) or re.search(at_name_pattern2, message_text):
                 logger.info(f"[图片检测] 通过事件检测到@机器人名字: {bot_name}")
@@ -1222,107 +1551,286 @@ class GroupChatPluginEnhanced(Star):
             # 目前先使用文本模式处理
             logger.info(f"[沉浸式对话] direct模式图片消息，使用文本模式处理")
         
-        llm_response = await provider.text_chat(
+        # 获取工具调用能力
+        func_tool = None
+        try:
+            # 使用AstrBot v4.0.0的工具管理器获取工具
+            tool_manager = self.context.get_llm_tool_manager()
+            if tool_manager:
+                # 获取当前会话的可用工具集 - 使用正确的get_full_tool_set方法
+                tool_set = tool_manager.get_full_tool_set()
+                if tool_set and hasattr(tool_set, 'tools') and tool_set.tools:
+                    func_tool = tool_set
+                    logger.info(f"[沉浸式对话] 获取到工具调用能力，工具数量: {len(tool_set.tools)}")
+                    
+                    # 关键改进：检查当前平台配置的搜索提供商，确保插件使用平台配置的搜索方法
+                    try:
+                        cfg = self.context.get_config()
+                        prov_settings = cfg.get("provider_settings", {})
+                        websearch_enable = prov_settings.get("web_search", False)
+                        websearch_provider = prov_settings.get("websearch_provider", "default")
+                        
+                        logger.info(f"[搜索适配] 平台搜索配置: 启用={websearch_enable}, 提供商={websearch_provider}")
+                        
+                        # 如果平台启用了搜索功能，记录可用的搜索工具
+                        if websearch_enable:
+                            available_search_tools = []
+                            for tool in tool_set.tools:
+                                if tool.name in ["web_search", "web_search_tavily", "AIsearch"]:
+                                    available_search_tools.append(tool.name)
+                            
+                            if available_search_tools:
+                                logger.info(f"[搜索适配] 可用搜索工具: {', '.join(available_search_tools)}")
+                            else:
+                                logger.info("[搜索适配] 未找到搜索工具，将使用平台默认配置")
+                        
+                    except Exception as config_error:
+                        logger.warning(f"[搜索适配] 获取平台搜索配置失败: {config_error}")
+                else:
+                    logger.info("[沉浸式对话] 当前会话没有可用的工具")
+        except Exception as e:
+            logger.warning(f"[沉浸式对话] 获取工具调用能力失败: {e}")
+        
+        # 关键修复：在沉浸式对话中，我们需要使用AstrBot v4.0.0的Agent系统来处理LLM请求
+        # 这样工具调用能力才能正确传递给LLM并自动处理工具调用循环
+        
+        # 导入必要的类
+        from astrbot.core.provider.entities import ProviderRequest
+        from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
+        from astrbot.core.agent.run_context import ContextWrapper
+        from astrbot.core.agent.hooks import BaseAgentRunHooks
+        from astrbot.core.agent.tool_executor import BaseFunctionToolExecutor
+        from astrbot.core.astr_agent_context import AstrAgentContext
+        
+        # 每次AI回复前重新获取上下文，确保包含最新的对话历史
+        try:
+            # 重新获取完整的对话历史，应用配置中的上下文限制
+            refreshed_context = await self._get_complete_conversation_history(event)
+            
+            # 合并重新获取的上下文和当前保存的上下文（通过内容去重避免重复）
+            if refreshed_context and isinstance(refreshed_context, list):
+                # 创建内容集合用于去重
+                existing_contents = set()
+                if saved_context and isinstance(saved_context, list):
+                    for msg in saved_context:
+                        if isinstance(msg, dict) and 'content' in msg:
+                            existing_contents.add(msg['content'])
+                
+                # 添加不重复的消息
+                for msg in refreshed_context:
+                    if isinstance(msg, dict) and 'content' in msg:
+                        if msg['content'] not in existing_contents:
+                            saved_context.append(msg)
+                            existing_contents.add(msg['content'])
+                
+                logger.info(f"[沉浸式对话] 重新获取上下文后，总消息数: {len(saved_context)}条")
+            else:
+                logger.info("[沉浸式对话] 重新获取上下文为空，使用原始上下文")
+        except Exception as e:
+            logger.warning(f"[沉浸式对话] 重新获取上下文失败: {e}")
+        # 应用上下文数量限制
+        max_context_messages = self.config.get('max_context_messages', -1)
+        if max_context_messages != -1:  # -1表示不限制
+            if max_context_messages == 0:  # 0表示不使用上下文
+                logger.info(f"[上下文限制] 配置为0，不使用上下文，清空历史记录")
+                saved_context = []
+            elif max_context_messages > 0 and len(saved_context) > max_context_messages:
+                # 保留最近的消息，去掉最前面的消息
+                original_length = len(saved_context)
+                saved_context = saved_context[-max_context_messages:]
+                logger.info(f"[上下文限制] 上下文数量({original_length})超过限制({max_context_messages})，保留最近{len(saved_context)}条消息")
+        
+        logger.info(f"[沉浸式对话] 应用上下文限制后，总长度: {len(saved_context)}")
+        # 创建ProviderRequest - 确保上下文格式正确
+        # 标准AstrBot使用json.loads(conversation.history)格式的上下文
+        if isinstance(saved_context, str):
+            try:
+                saved_context = json.loads(saved_context)
+            except json.JSONDecodeError:
+                logger.warning("[沉浸式对话] 上下文格式异常，使用空列表")
+                saved_context = []
+        elif not isinstance(saved_context, list):
+            saved_context = []
+            
+        req = ProviderRequest(
             prompt=user_prompt,
             contexts=saved_context,
-            system_prompt=instruction
+            system_prompt=instruction,
+            func_tool=func_tool
         )
+        
+        # 初始化AgentRunner
+        AgentRunner = ToolLoopAgentRunner[AstrAgentContext]
+        agent_runner = AgentRunner()
+        
+        # 创建Agent上下文
+        astr_agent_ctx = AstrAgentContext(
+            provider=provider,
+            first_provider_request=req,
+            curr_provider_request=req,
+            streaming=False,  # 非流式响应
+            tool_call_timeout=60  # 工具调用超时时间
+        )
+        
+        # 创建自定义的ToolExecutor
+        class ImmersiveToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
+            @classmethod
+            def execute(cls, tool, run_context, **tool_args):
+                # 这里可以添加自定义的工具执行逻辑
+                # 对于沉浸式对话，我们使用AstrBot中实际的FunctionToolExecutor
+                from astrbot.core.pipeline.process_stage.method.llm_request import FunctionToolExecutor
+                # 正确返回异步生成器方法本身，而不是调用结果
+                return FunctionToolExecutor.execute(tool, run_context, **tool_args)
+        
+        # 创建自定义的AgentHooks
+        class ImmersiveAgentHooks(BaseAgentRunHooks[AstrAgentContext]):
+            async def on_agent_done(self, run_context, llm_response):
+                # 在Agent完成时记录日志
+                logger.info(f"[沉浸式对话] Agent处理完成，响应长度: {len(llm_response.completion_text)}")
+        
+        # 重置并配置AgentRunner
+        await agent_runner.reset(
+            provider=provider,
+            request=req,
+            run_context=ContextWrapper(context=astr_agent_ctx, event=event),
+            tool_executor=ImmersiveToolExecutor(),
+            agent_hooks=ImmersiveAgentHooks(),
+            streaming=False
+        )
+        
+        # 执行Agent步骤，处理工具调用循环
+        max_steps = 30  # 最大步骤数
+        step_count = 0
+        
+        while step_count < max_steps and not agent_runner.done():
+            step_count += 1
+            async for _ in agent_runner.step():
+                # 处理Agent步骤中的各种响应
+                pass
+            
+            # 检查是否完成
+            if agent_runner.done():
+                break
+
+        # 获取最终的LLM响应
+        llm_response = agent_runner.get_final_llm_resp()
+        
+        # 如果AgentRunner没有返回响应，使用后备方案
+        if not llm_response:
+            logger.warning("[沉浸式对话] AgentRunner未返回响应，使用后备方案")
+            llm_response = await provider.text_chat(
+                prompt=user_prompt,
+                contexts=saved_context,
+                system_prompt=instruction,
+                func_tool=func_tool
+            )
+        
+        # 关键修复：保存对话历史到平台，确保上下文连续性
+        # 模仿标准AstrBot的_save_to_history方法逻辑
+        if llm_response and llm_response.role == "assistant":
+            try:
+                # 获取Agent执行后的完整上下文（包括Agent可能添加的工具调用结果）
+                # 通过run_context获取Agent修改后的上下文
+                if hasattr(agent_runner, 'run_context') and agent_runner.run_context:
+                    run_context = agent_runner.run_context
+                    if hasattr(run_context, 'context') and hasattr(run_context.context, 'curr_provider_request'):
+                        # 使用Agent修改后的上下文
+                        agent_request = run_context.context.curr_provider_request
+                        if agent_request and agent_request.contexts:
+                            messages = agent_request.contexts.copy()
+                            logger.info(f"[沉浸式对话] 使用Agent修改后的上下文，长度: {len(messages)}")
+                        else:
+                            # 使用原始上下文
+                            messages = saved_context.copy() if saved_context else []
+                            logger.info(f"[沉浸式对话] 使用原始上下文，长度: {len(messages)}")
+                    else:
+                        # 使用原始上下文
+                        messages = saved_context.copy() if saved_context else []
+                        logger.info(f"[沉浸式对话] 使用原始上下文，长度: {len(messages)}")
+                else:
+                    # 使用原始上下文
+                    messages = saved_context.copy() if saved_context else []
+                    logger.info(f"[沉浸式对话] 使用原始上下文，长度: {len(messages)}")
+                
+                # 确保包含当前轮次的完整对话
+                # 检查是否已经包含了当前用户输入和LLM响应
+                has_current_user_input = any(msg.get('content') == user_prompt for msg in messages if isinstance(msg, dict))
+                has_current_llm_response = any(msg.get('content') == llm_response.completion_text for msg in messages if isinstance(msg, dict))
+                
+                if not has_current_user_input:
+                    messages.append({"role": "user", "content": user_prompt})
+                if not has_current_llm_response:
+                    messages.append({"role": "assistant", "content": llm_response.completion_text})
+                
+                # 保存到平台对话历史
+                await self._save_conversation_history(event.unified_msg_origin, messages)
+                logger.info(f"[沉浸式对话] 对话历史已保存，总消息数: {len(messages)}条")
+            except Exception as e:
+                logger.warning(f"[沉浸式对话] 保存对话历史失败: {e}")
         
         # 检查是否启用详细日志
         if self._is_detailed_logging():
             logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM调用完成，响应长度: {len(llm_response.completion_text)}")
-        
-        json_string = self._extract_json_from_text(llm_response.completion_text)
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 工具调用信息: names={llm_response.tools_call_name}, args={llm_response.tools_call_args}")
         
         # 检查是否启用详细日志
         if self._is_detailed_logging():
-            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - JSON提取结果: {'成功' if json_string else '失败'}")
-            if json_string:
-                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 提取的JSON长度: {len(json_string)}")
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM响应文本预览: {llm_response.completion_text[:200]}")
         
-        if not json_string:
-            # 统一处理JSON提取失败的情况
-            await self._handle_json_extraction_failure(llm_response.completion_text, event.unified_msg_origin, "沉浸式对话")
+        # 在AstrBot v4.0.0中，工具调用由ToolLoopAgentRunner自动处理
+        # 如果响应包含工具调用信息，说明AstrBot已经处理了工具调用循环
+        # 我们只需要检查最终的响应内容
+        if llm_response.tools_call_name and len(llm_response.tools_call_name) > 0:
+            logger.info(f"[沉浸式对话] 检测到工具调用，但AstrBot已自动处理工具调用循环")
+            # 工具调用已由AstrBot自动处理，我们继续处理最终的响应内容
+        
+        # 优化版本：直接处理LLM响应，不再使用JSON格式
+        response_text = llm_response.completion_text.strip()
+        
+        # 检查是否启用详细日志
+        if self._is_detailed_logging():
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM响应处理开始，响应长度: {len(response_text)}")
+            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 响应内容预览: {response_text[:200]}")
+        
+        # 检查是否是不回复标记
+        if "[DO_NOT_REPLY]" in response_text:
+            logger.info("[沉浸式对话] LLM判断不需要回复，结束沉浸式对话状态")
+            # 清理会话
+            if session_key in self.immersive_sessions:
+                del self.immersive_sessions[session_key]
             return True
         
-        try:
-            decision_data = json.loads(json_string)
-            should_reply = decision_data.get("should_reply")
-            content = decision_data.get("content", "")
+        # 直接使用LLM的回复内容
+        if response_text:
+            logger.info(f"[沉浸式对话] LLM决定回复，内容: {response_text[:50]}...")
             
             # 检查是否启用详细日志
             if self._is_detailed_logging():
-                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - JSON解析成功，should_reply={should_reply}, content长度={len(content)}")
-        
-            if should_reply is True:
-                if content:
-                    logger.info(f"[沉浸式对话] LLM判断需要回复，内容: {content[:50]}...")
-                    
-                    # 检查是否启用详细日志
-                    if self._is_detailed_logging():
-                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 沉浸式对话决定回复，内容预览: {content[:100]}")
-                    
-                    message_chain = MessageChain().message(content)
-                    await self.context.send_message(event.unified_msg_origin, message_chain)
-                    
-                    # ✅ 关键修改：确保沉浸式对话的回复也保存到平台历史记录
-                    try:
-                        # 通过平台的对话管理器保存回复
-                        await self._save_bot_reply_to_conversation(event, content)
-                    except Exception as e:
-                        logger.warning(f"[沉浸式对话] 保存回复到平台历史失败: {e}")
-                    
-                    # 回复后重新启动沉浸式会话
-                    await self._arm_immersive_session(event)
-                    
-                    # 检查是否启用详细日志
-                    if self._is_detailed_logging():
-                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 沉浸式回复已发送，会话已重新启动")
-                else:
-                    logger.info("[沉浸式对话] LLM判断为 true 但内容为空，跳过回复。")
-                    
-                    # 检查是否启用详细日志
-                    if self._is_detailed_logging():
-                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM判断为true但内容为空，跳过回复")
-            elif should_reply is False:
-                if content:
-                    logger.info(f"[沉浸式对话] LLM判断为 false 但仍回复，内容: {content[:50]}...")
-                    
-                    # 检查是否启用详细日志
-                    if self._is_detailed_logging():
-                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM判断为false但仍回复，内容预览: {content[:100]}")
-                    
-                    message_chain = MessageChain().message(content)
-                    await self.context.send_message(event.unified_msg_origin, message_chain)
-                else:
-                    logger.info("[沉浸式对话] LLM判断为 false 且无内容，跳过回复与计时。")
-                    
-                    # 检查是否启用详细日志
-                    if self._is_detailed_logging():
-                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM判断为false且无内容，跳过回复")
-                # 结束沉浸式对话
-                async with self.immersive_lock:
-                    if session_key in self.immersive_sessions:
-                        self.immersive_sessions[session_key]['timer'].cancel()
-                        self.immersive_sessions.pop(session_key, None)
-                    
-                        # 检查是否启用详细日志
-                        if self._is_detailed_logging():
-                            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 沉浸式对话会话已结束，会话键: {session_key}")
-            else:
-                logger.warning("[沉浸式对话] LLM返回格式异常，跳过处理。")
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 沉浸式对话决定回复，内容预览: {response_text[:100]}")
+            
+            # 发送回复
+            message_chain = MessageChain().message(response_text)
+            await self.context.send_message(event.session, message_chain)
+            
+            # 保存回复到平台历史记录
+            try:
+                await self._save_bot_reply_to_conversation(event, response_text)
+                await asyncio.sleep(0.1)  # 等待保存完成
+                # 回复后重新启动沉浸式会话
+                await self._arm_immersive_session(event)
+            except Exception as e:
+                logger.warning(f"[沉浸式对话] 保存回复到平台历史失败: {e}")
+                # 即使保存失败，也重新启动沉浸式会话
+                await self._arm_immersive_session(event)
                 
                 # 检查是否启用详细日志
                 if self._is_detailed_logging():
-                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - LLM返回格式异常，should_reply值: {should_reply}")
-        except (json.JSONDecodeError, TypeError, AttributeError) as e:
-            logger.error(f"[沉浸式对话] 解析LLM的JSON回复失败: {e}\n清理后文本: '{json_string}'")
-            
-            # 检查是否启用详细日志
-            if self._is_detailed_logging():
-                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - JSON解析异常: {e}")
-                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 原始JSON字符串: {json_string}")
+                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 沉浸式回复已发送，会话已重新启动")
+            else:
+                logger.info("[沉浸式对话] LLM响应为空")
 
+        # 关键修复：只有当沉浸式对话真正处理了用户消息（发送了回复）时才返回True
+        # 其他情况（如工具调用后AI准备回复）都应该返回False，让事件继续传播
         return True
 
 
@@ -1387,7 +1895,17 @@ class GroupChatPluginEnhanced(Star):
                 return []
             conversation = await self.context.conversation_manager.get_conversation(unified_msg_origin, curr_cid)
             if conversation and conversation.history:
-                return json.loads(conversation.history)
+                try:
+                    history_data = json.loads(conversation.history)
+                    # 确保返回的是列表
+                    if isinstance(history_data, list):
+                        return history_data
+                    else:
+                        logger.warning(f"[历史记录获取] 历史数据格式错误，期望list，实际{type(history_data)}")
+                        return []
+                except json.JSONDecodeError as e:
+                    logger.warning(f"[历史记录获取] JSON解析失败: {e}")
+                    return []
             return []
         except Exception as e:
             logger.error(f"[历史记录获取] 获取对话历史时出错: {e}", exc_info=True)
@@ -1404,7 +1922,11 @@ class GroupChatPluginEnhanced(Star):
             if self.context_analyzer:
                 try:
                     chat_context = await self.context_analyzer.analyze_chat_context(event)
-                    plugin_context = chat_context.get('messages', [])
+                    plugin_context = chat_context.get('conversation_history', [])
+                    # 确保是列表格式
+                    if not isinstance(plugin_context, list):
+                        logger.warning(f"[沉浸式对话] 插件上下文格式错误，期望list，实际{type(plugin_context)}")
+                        plugin_context = []
                 except Exception as e:
                     logger.warning(f"[沉浸式对话] 获取插件上下文失败: {e}")
             
@@ -1416,13 +1938,33 @@ class GroupChatPluginEnhanced(Star):
                 logger.info(f"[沉浸式对话] 平台历史较少({len(complete_context)}条)，使用插件上下文({len(plugin_context)}条)")
                 complete_context = plugin_context
             elif plugin_context:
-                # 合并上下文，避免重复
+                # 合并上下文，避免重复但保留重要上下文信息
                 logger.info(f"[沉浸式对话] 合并平台历史({len(complete_context)}条)和插件上下文({len(plugin_context)}条)")
-                # 简单的去重逻辑：如果插件上下文中有平台历史没有的消息，则添加
-                platform_texts = {msg.get('content', '') for msg in complete_context if isinstance(msg, dict)}
+                
+                # 改进的去重逻辑：基于时间戳和内容进行智能合并
+                platform_messages = {}
+                for msg in complete_context:
+                    if isinstance(msg, dict):
+                        content = msg.get('content', '')
+                        timestamp = msg.get('timestamp', 0)
+                        # 使用内容和时间戳作为唯一标识
+                        key = f"{content}_{timestamp}"
+                        platform_messages[key] = msg
+                
+                # 添加插件上下文中的新消息
                 for msg in plugin_context:
-                    if isinstance(msg, dict) and msg.get('content', '') not in platform_texts:
-                        complete_context.append(msg)
+                    if isinstance(msg, dict):
+                        content = msg.get('content', '')
+                        timestamp = msg.get('timestamp', 0)
+                        key = f"{content}_{timestamp}"
+                        
+                        # 如果平台历史中没有该消息，则添加
+                        if key not in platform_messages:
+                            complete_context.append(msg)
+                            logger.debug(f"[沉浸式对话] 添加插件上下文消息: {content[:50]}...")
+                
+                # 按时间戳排序，确保对话顺序正确
+                complete_context.sort(key=lambda x: x.get('timestamp', 0) if isinstance(x, dict) else 0)
             
             # 4. 应用上下文数量限制
             max_context_messages = self.config.get('max_context_messages', -1)
@@ -1441,6 +1983,7 @@ class GroupChatPluginEnhanced(Star):
             
         except Exception as e:
             logger.error(f"[沉浸式对话] 获取完整对话历史时出错: {e}", exc_info=True)
+            logger.info(f"[沉浸式对话] 异常情况下返回空上下文，总长度: 0")
             return []
 
     async def _save_bot_reply_to_conversation(self, event: AstrMessageEvent, reply_content: str):
@@ -1654,6 +2197,9 @@ class GroupChatPluginEnhanced(Star):
         except Exception as e:
             logger.error(f"[历史保存][user] 保存用户消息到平台历史记录时出错: {e}", exc_info=True)
 
+    # 在AstrBot v4.0.0中，工具调用由ToolLoopAgentRunner自动处理
+    # 不再需要手动处理工具调用，因此删除_handle_tool_calls方法
+
     async def _fallback_save_to_filesystem(self, unified_msg_origin: str, conversation_id: str, history_list: list):
         """临时文件保存方法，当官方方法失败时使用。"""
         try:
@@ -1774,7 +2320,10 @@ class GroupChatPluginEnhanced(Star):
             # 1. 首先检查是否有临时历史记录需要迁移
             await self._migrate_temp_history_to_official(unified_msg_origin, conversation_id)
             
-            # 2. 尝试使用官方方法保存
+            # 2. 检查并执行消息清理（如果启用）
+            history_list = await self._cleanup_history_if_needed(unified_msg_origin, conversation_id, history_list)
+            
+            # 3. 尝试使用官方方法保存
             official_success = await self._try_official_persistence(unified_msg_origin, conversation_id, history_list)
             
             if official_success:
@@ -1783,12 +2332,127 @@ class GroupChatPluginEnhanced(Star):
                 logger.info(f"[智能保存] 官方方法保存成功，对话ID={conversation_id}")
                 return
             
-            # 3. 官方方法失败，使用临时文件保存
+            # 4. 官方方法失败，使用临时文件保存
             logger.warning(f"[智能保存] 官方方法失败，使用临时文件保存，对话ID={conversation_id}")
             await self._fallback_save_to_filesystem(unified_msg_origin, conversation_id, history_list)
             
         except Exception as e:
             logger.error(f"[智能保存] 持久化历史时发生异常: {e}", exc_info=True)
+
+    async def _save_conversation_history(self, unified_msg_origin: str, history_list: list):
+        """保存完整的对话历史记录到平台，确保上下文连续性。"""
+        try:
+            # 获取当前对话ID
+            curr_cid = await self.context.conversation_manager.get_curr_conversation_id(unified_msg_origin)
+            if not curr_cid:
+                # 如果没有当前对话ID，创建一个新的对话
+                curr_cid = await self.context.conversation_manager.create_conversation(unified_msg_origin)
+                logger.info(f"[历史保存] 创建新对话ID: {curr_cid}")
+            
+            if curr_cid:
+                # 使用智能持久化方法保存历史记录
+                await self._persist_conversation_history(unified_msg_origin, curr_cid, history_list)
+                logger.info(f"[历史保存] 对话历史已保存，对话ID={curr_cid}，消息数量={len(history_list)}")
+            else:
+                logger.warning(f"[历史保存] 无法创建或获取对话ID")
+                
+        except Exception as e:
+            logger.error(f"[历史保存] 保存对话历史时出错: {e}", exc_info=True)
+
+    async def _cleanup_history_if_needed(self, unified_msg_origin: str, conversation_id: str, history_list: list) -> list:
+        """检查配置并执行消息清理（如果启用）。"""
+        try:
+            # 获取消息清理配置
+            cleanup_config = self.config.get("message_cleanup", {})
+            enable_cleanup = cleanup_config.get("enable_cleanup", False)
+            
+            # 详细日志：消息清理功能状态
+            if self._is_detailed_logging():
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 消息清理功能状态: 启用={enable_cleanup}")
+            
+            if not enable_cleanup:
+                # 详细日志：消息清理功能未启用
+                if self._is_detailed_logging():
+                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 消息清理功能未启用，跳过清理")
+                return history_list
+            
+            # 获取目标群组列表
+            target_groups = cleanup_config.get("target_groups", [])
+            max_messages = cleanup_config.get("max_messages", 1000)
+            
+            # 详细日志：消息清理配置信息
+            if self._is_detailed_logging():
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 消息清理配置: 目标群组数量={len(target_groups)}，最大消息数={max_messages}")
+                if target_groups:
+                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 目标群组列表: {target_groups}")
+            
+            # 检查是否需要对当前群组进行清理
+            group_id = self._extract_group_id_from_umo(unified_msg_origin)
+            
+            # 详细日志：群组ID提取结果
+            if self._is_detailed_logging():
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 从UMO提取群组ID: {group_id}")
+            
+            if not group_id:
+                # 详细日志：无法提取群组ID
+                if self._is_detailed_logging():
+                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 无法提取群组ID，跳过清理")
+                return history_list
+            
+            # 检查群组是否在目标列表中（如果目标列表为空，则对所有群组生效）
+            if target_groups and group_id not in target_groups:
+                # 详细日志：群组不在目标列表中
+                if self._is_detailed_logging():
+                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 群组 {group_id} 不在目标列表中，跳过清理")
+                return history_list
+            
+            # 检查当前历史记录是否超出限制
+            current_count = len(history_list)
+            
+            # 详细日志：当前历史记录数量
+            if self._is_detailed_logging():
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 群组 {group_id} 当前历史记录数量: {current_count}")
+            
+            if current_count <= max_messages:
+                # 详细日志：历史记录未超出限制
+                if self._is_detailed_logging():
+                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 历史记录未超出限制 ({current_count} <= {max_messages})，无需清理")
+                return history_list
+            
+            # 执行清理：删除最旧的消息，保留最新的max_messages条
+            messages_to_remove = current_count - max_messages
+            cleaned_history = history_list[messages_to_remove:]
+            
+            # 详细日志：清理操作详情
+            if self._is_detailed_logging():
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 执行消息清理: 删除最旧的 {messages_to_remove} 条消息")
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 清理前消息数量: {current_count}，清理后消息数量: {len(cleaned_history)}")
+            
+            logger.info(f"[消息清理] 群组 {group_id} 历史记录超出限制 ({current_count} > {max_messages})，删除最旧的 {messages_to_remove} 条消息")
+            
+            return cleaned_history
+            
+        except Exception as e:
+            logger.error(f"[消息清理] 执行消息清理时发生异常: {e}")
+            return history_list
+
+    def _extract_group_id_from_umo(self, unified_msg_origin: str) -> str:
+        """从统一消息来源中提取群组ID。"""
+        try:
+            # UMO格式通常为 "platform:group_id" 或 "platform:user_id@group_id"
+            if ":" in unified_msg_origin:
+                parts = unified_msg_origin.split(":")
+                if len(parts) >= 2:
+                    # 提取群组ID部分
+                    group_part = parts[1]
+                    # 如果包含@符号，取@后面的部分
+                    if "@" in group_part:
+                        group_part = group_part.split("@")[1]
+                    return group_part
+            return ""
+        except Exception as e:
+            logger.warning(f"[消息清理] 提取群组ID失败: {e}")
+            return ""
 
     async def _try_official_persistence(self, unified_msg_origin: str, conversation_id: str, history_list: list) -> bool:
         """尝试使用官方对话管理器进行持久化。"""
@@ -2000,6 +2664,11 @@ class GroupChatPluginEnhanced(Star):
                 logger.info(f"[主动插话检查] 检测到强制回复正在进行，跳过主动插话逻辑，群组ID: {group_id}")
                 return
             
+            # 新增检查点：检查是否正在进行读空气主动对话，防止冲突
+            if self._air_reading_in_progress.get(group_id, False):
+                logger.info(f"[主动插话检查] 检测到读空气主动对话正在进行，跳过主动插话逻辑，群组ID: {group_id}")
+                return
+            
             delay = self.config.get("proactive_reply_delay", 8)
             
             # 检查是否启用详细日志
@@ -2027,6 +2696,10 @@ class GroupChatPluginEnhanced(Star):
                 return
 
             logger.debug(f"[主动插话] 群 {group_id} 计时结束，收集到 {len(chat_history)} 条消息，请求LLM判断。")
+            
+            # 设置主动插话互斥标记，防止读空气主动对话同时触发
+            self._proactive_reply_in_progress[group_id] = True
+            logger.debug(f"[主动插话] 设置主动插话互斥标记，群组ID: {group_id}")
             
             # 检查是否启用详细日志
             if self._is_detailed_logging():
@@ -2077,110 +2750,56 @@ class GroupChatPluginEnhanced(Star):
             if self._is_detailed_logging():
                 logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话LLM调用完成，响应长度: {len(llm_response.completion_text)}")
             
-            json_string = self._extract_json_from_text(llm_response.completion_text)
+            # 优化版本：直接处理LLM响应，不再使用JSON格式
+            response_text = llm_response.completion_text.strip()
             
             # 检查是否启用详细日志
             if self._is_detailed_logging():
-                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话JSON提取结果: {'成功' if json_string else '失败'}")
-                if json_string:
-                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 提取的JSON长度: {len(json_string)}")
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话LLM响应处理开始，响应长度: {len(response_text)}")
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 响应内容预览: {response_text[:200]}")
             
-            if not json_string:
-                # 统一处理JSON提取失败的情况
-                await self._handle_json_extraction_failure(llm_response.completion_text, unified_msg_origin, "主动插话")
+            # 检查是否是不回复标记
+            if "[DO_NOT_REPLY]" in response_text:
+                logger.info("[主动插话] LLM判断不需要插话，保持沉默")
                 return
             
-            try:
-                decision_data = json.loads(json_string)
-                should_reply = decision_data.get("should_reply")
-                content = decision_data.get("content", "")
+            # 直接使用LLM的回复内容
+            if response_text:
+                logger.info(f"[主动插话] LLM决定插话，内容: {response_text[:50]}...")
                 
                 # 检查是否启用详细日志
                 if self._is_detailed_logging():
-                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话JSON解析成功，should_reply={should_reply}, content长度={len(content)}")
-            
-                if should_reply is True:
-                    if content:
-                        logger.info(f"[主动插话] LLM判断需要回复，内容: {content[:50]}...")
-                        
-                        # 检查是否启用详细日志
-                        if self._is_detailed_logging():
-                            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话决定回复，内容预览: {content[:100]}")
-                        
-                        message_chain = MessageChain().message(content)
-                        await self.context.send_message(unified_msg_origin, message_chain)
-                        
-                        # ✅ 关键修改：确保主动插话的回复也保存到平台历史记录
-                        try:
-                            # 创建一个模拟的event对象来保存回复
-                            from types import SimpleNamespace
-                            mock_event = SimpleNamespace()
-                            mock_event.unified_msg_origin = unified_msg_origin
-                            await self._save_bot_reply_to_conversation(mock_event, content)
-                        except Exception as e:
-                            logger.warning(f"[主动插话] 保存回复到平台历史失败: {e}")
-                        
-                        # 检查是否启用详细日志
-                        if self._is_detailed_logging():
-                            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话回复已发送")
-                    else:
-                        logger.info("[主动插话] LLM判断为 true 但内容为空，跳过回复，继续计时。")
-                        
-                        # 检查是否启用详细日志
-                        if self._is_detailed_logging():
-                            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话判断为true但内容为空，继续计时")
-                        
-                        # 重新启动主动插话任务，传递默认的图片拦截状态（True）
-                        await self._start_proactive_check(group_id, unified_msg_origin, True)
-                elif should_reply is False:
-                    if content:
-                        logger.info(f"[主动插话] LLM判断为 false 但仍回复，内容: {content[:50]}...")
-                        
-                        # 检查是否启用详细日志
-                        if self._is_detailed_logging():
-                            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话判断为false但仍回复，内容预览: {content[:100]}")
-                        
-                        message_chain = MessageChain().message(content)
-                        await self.context.send_message(unified_msg_origin, message_chain)
-                        
-                        # ✅ 关键修改：确保主动插话的回复也保存到平台历史记录
-                        try:
-                            # 创建一个模拟的event对象来保存回复
-                            from types import SimpleNamespace
-                            mock_event = SimpleNamespace()
-                            mock_event.unified_msg_origin = unified_msg_origin
-                            await self._save_bot_reply_to_conversation(mock_event, content)
-                        except Exception as e:
-                            logger.warning(f"[主动插话] 保存回复到平台历史失败: {e}")
-                        
-                        # 检查是否启用详细日志
-                        if self._is_detailed_logging():
-                            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话回复已发送")
-                    else:
-                        logger.info("[主动插话] LLM判断为 false 且无内容，跳过回复与计时。")
-                        
-                        # 检查是否启用详细日志
-                        if self._is_detailed_logging():
-                            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话判断为false且无内容，跳过回复")
-                else:
-                    logger.warning("[主动插话] LLM返回格式异常，跳过处理。")
-                    
-                    # 检查是否启用详细日志
-                    if self._is_detailed_logging():
-                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话LLM返回格式异常，should_reply值: {should_reply}")
-            except (json.JSONDecodeError, TypeError, AttributeError) as e:
-                logger.error(f"[主动插话] 解析LLM的JSON回复失败: {e}\n清理后文本: '{json_string}'")
+                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话决定回复，内容预览: {response_text[:100]}")
+                
+                # 发送回复
+                message_chain = MessageChain().message(response_text)
+                await self.context.send_message(unified_msg_origin, message_chain)
+                
+                # 保存回复到平台历史记录
+                try:
+                    from types import SimpleNamespace
+                    mock_event = SimpleNamespace()
+                    mock_event.unified_msg_origin = unified_msg_origin
+                    await self._save_bot_reply_to_conversation(mock_event, response_text)
+                except Exception as e:
+                    logger.warning(f"[主动插话] 保存回复到平台历史失败: {e}")
                 
                 # 检查是否启用详细日志
                 if self._is_detailed_logging():
-                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话JSON解析异常: {e}")
-                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 原始JSON字符串: {json_string}")
+                    logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 主动插话回复已发送")
+            else:
+                logger.info("[主动插话] LLM响应为空，保持沉默")
 
         except asyncio.CancelledError:
             logger.debug(f"[主动插话] 群 {group_id} 的检查任务被取消。")
         except Exception as e:
             logger.error(f"[主动插话] 群 {group_id} 的检查任务出现未知异常: {e}", exc_info=True)
         finally:
+            # 清除主动插话互斥标记
+            if group_id in self._proactive_reply_in_progress:
+                self._proactive_reply_in_progress.pop(group_id, None)
+                logger.debug(f"[主动插话] 清除主动插话互斥标记，群组ID: {group_id}")
+            
             async with self.proactive_lock:
                 if self.active_proactive_timers.get(group_id) is asyncio.current_task():
                     self.active_proactive_timers.pop(group_id, None)
@@ -2222,6 +2841,19 @@ class GroupChatPluginEnhanced(Star):
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
         """处理群聊消息的主入口 - 融合两种处理逻辑"""
+        try:
+            # ✅ 修复：确保event对象具有所有必需的属性
+            if not hasattr(event, 'platform_meta') and hasattr(event, 'platform'):
+                event.platform_meta = event.platform
+            
+            # ✅ 修复：确保session对象正确初始化
+            if hasattr(event, 'session') and event.session:
+                # 确保session有platform_id属性
+                if not hasattr(event.session, 'platform_id') and hasattr(event.session, 'platform_name'):
+                    event.session.platform_id = event.session.platform_name
+        except Exception as e:
+            logger.warning(f"[兼容性修复] 事件对象属性检查失败: {e}")
+        
         group_id = event.get_group_id()
         
         # ✅ 第一步：在消息处理的最开始添加发送者信息
@@ -2229,9 +2861,36 @@ class GroupChatPluginEnhanced(Star):
         sender_name = event.get_sender_name()
         sender_info = f"[User ID: {sender_id}, Nickname: {sender_name}]"
         
-        # 如果消息内容不为空，在消息前面添加发送者信息
+        # ✅ 第二步：添加时间戳功能
+        timestamp_info = ""
+        timestamp_config = self.config.get("timestamp_display", {})
+        enable_timestamp = timestamp_config.get("enable_timestamp", False)
+        
+        if enable_timestamp:
+            current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            timestamp_info = f"[Time: {current_time}]"
+            
+            # 详细日志：时间戳功能状态
+            if self._is_detailed_logging():
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 时间戳显示功能已启用，当前时间: {current_time}")
+        else:
+            # 详细日志：时间戳功能状态
+            if self._is_detailed_logging():
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 时间戳显示功能未启用")
+        
+        # 如果消息内容不为空，在消息前面添加发送者信息和时间戳
         if hasattr(event, 'message_str') and event.message_str:
-            event.message_str = f"{sender_info} {event.message_str}"
+            original_length = len(event.message_str)
+            if timestamp_info:
+                event.message_str = f"{sender_info} {timestamp_info} {event.message_str}"
+            else:
+                event.message_str = f"{sender_info} {event.message_str}"
+            
+            # 详细日志：消息内容修改
+            if self._is_detailed_logging():
+                new_length = len(event.message_str)
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 消息内容已修改，原始长度: {original_length}，新长度: {new_length}")
+                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 修改后消息预览: {event.message_str[:100]}...")
         
         # 初始化消息处理标志
         event._should_process_message = True
@@ -2291,8 +2950,20 @@ class GroupChatPluginEnhanced(Star):
             logger.info(f"[沉浸式对话] 检测到沉浸式会话，消息内容: {event.message_str[:100]}...")
             
             # 使用新抽取的独立方法处理沉浸式会话
-            await self._handle_immersive_session(event, session_key, session_data)
-            return
+            result = await self._handle_immersive_session(event, session_key, session_data)
+            
+            # 关键修复：只有当沉浸式会话真正处理了用户消息时才终止事件传播
+            # 如果result为True，表示沉浸式会话已经处理了用户消息并可能发送了回复
+            # 如果result为False，表示沉浸式会话没有处理用户消息（比如工具调用后的AI回复）
+            if result:
+                logger.info("[沉浸式对话] 沉浸式会话处理完成，完全终止事件传播")
+                # 确保事件传播被完全终止，防止后续处理
+                event.stop_event()
+                # 关键修复：直接返回，不再执行后续的群聊处理逻辑
+                return
+            else:
+                logger.info("[沉浸式对话] 沉浸式会话未处理消息，继续正常群聊处理")
+                # 如果沉浸式会话没有处理消息，继续正常群聊处理
 
         # ✅ 4. 处理群聊插件的原有逻辑
         # 关键修改：确保@消息图片也能进入群聊处理流程
@@ -2381,10 +3052,66 @@ class GroupChatPluginEnhanced(Star):
             
             # 调用LLM
             try:
+                # 构建系统提示词，包含自定义提示词
+                system_prompt = found_persona if found_persona else ""
+                
+                # 添加自定义系统提示词
+                if isinstance(self.config, dict):
+                    system_prompt_config = self.config.get("system_prompt", {})
+                    enable_system_prompt = system_prompt_config.get("enable_system_prompt", False)
+                    custom_prompt = system_prompt_config.get("custom_prompt", "").strip()
+                    
+                    # 详细日志：系统提示词功能状态
+                    if self._is_detailed_logging():
+                        logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 系统提示词功能状态: 启用={enable_system_prompt}")
+                        if enable_system_prompt:
+                            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 自定义提示词长度: {len(custom_prompt)} 字符")
+                            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 自定义提示词预览: {custom_prompt[:100]}...")
+                    
+                    if enable_system_prompt and custom_prompt:
+                        if system_prompt:
+                            system_prompt += f"\n\n【自定义系统提示词】\n{custom_prompt}"
+                            # 详细日志：系统提示词已合并
+                            if self._is_detailed_logging():
+                                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 已合并人格提示词和自定义系统提示词")
+                        else:
+                            system_prompt = f"【自定义系统提示词】\n{custom_prompt}"
+                            # 详细日志：系统提示词已应用
+                            if self._is_detailed_logging():
+                                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 已应用自定义系统提示词")
+                    else:
+                        # 详细日志：系统提示词未应用
+                        if self._is_detailed_logging():
+                            logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 未应用自定义系统提示词")
+                
+                # ✅ 新增：添加工具识别功能
+                if self._should_include_tools_prompt(event):
+                    try:
+                        available_tools = await self._get_available_tools()
+                        if available_tools:
+                            tools_prompt = self._format_tools_prompt(available_tools)
+                            if system_prompt:
+                                system_prompt += f"\n\n{tools_prompt}"
+                            else:
+                                system_prompt = tools_prompt
+                            
+                            logger.info(f"[工具识别] 已向AI提供{len(available_tools)}个可用工具信息")
+                            if self._is_detailed_logging():
+                                logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 工具提示词预览: {tools_prompt[:200]}...")
+                        else:
+                            logger.debug("[工具识别] 未找到可用工具")
+                    except Exception as e:
+                        logger.warning(f"[工具识别] 获取工具信息失败: {e}")
+                
+                # 确保contexts是列表格式
+                if not isinstance(contexts, list):
+                    logger.warning(f"[强制回复] contexts格式错误，期望list，实际{type(contexts)}，使用空列表")
+                    contexts = []
+                
                 llm_response = await provider.text_chat(
                     prompt=event.message_str,
                     contexts=contexts,
-                    system_prompt=found_persona if found_persona else None
+                    system_prompt=system_prompt if system_prompt else None
                 )
                 
                 response_content = llm_response.completion_text.strip()
@@ -2441,10 +3168,30 @@ class GroupChatPluginEnhanced(Star):
             if 'messages' not in chat_context:
                 chat_context['messages'] = []
             # 合并上下文，避免重复
-            existing_texts = {msg.get('content', '') for msg in chat_context['messages'] if isinstance(msg, dict)}
+            existing_texts = set()
+            for msg in chat_context['messages']:
+                if isinstance(msg, dict):
+                    content = msg.get('content', '')
+                    # 如果content是列表，转换为字符串；如果是字符串，直接使用
+                    if isinstance(content, list):
+                        content_str = ' '.join(str(item) for item in content)
+                    else:
+                        content_str = str(content)
+                    existing_texts.add(content_str)
+            
             for msg in complete_history:
-                if isinstance(msg, dict) and msg.get('content', '') not in existing_texts:
-                    chat_context['messages'].append(msg)
+                if isinstance(msg, dict):
+                    content = msg.get('content', '')
+                    # 如果content是列表，转换为字符串；如果是字符串，直接使用
+                    if isinstance(content, list):
+                        content_str = ' '.join(str(item) for item in content)
+                    else:
+                        content_str = str(content)
+                    
+                    if content_str not in existing_texts:
+                        chat_context['messages'].append(msg)
+                        # 添加到existing_texts避免重复添加
+                        existing_texts.add(content_str)
         
         # 检查是否启用详细日志
         if self._is_detailed_logging():
@@ -2496,9 +3243,22 @@ class GroupChatPluginEnhanced(Star):
         if self._is_detailed_logging():
             logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 当前连续回复计数: {consecutive_count}/{max_consecutive}")
         
+        # 检查主动插话是否正在进行，如果是则跳过读空气功能
+        if self._proactive_reply_in_progress.get(group_id, False):
+            logger.debug(f"[读空气] 检测到主动插话正在进行，群组ID: {group_id}，跳过读空气功能")
+            return
+        
+        # 设置读空气主动对话互斥标记，防止主动插话同时触发
+        self._air_reading_in_progress[group_id] = True
+        logger.debug(f"[读空气] 设置读空气互斥标记，群组ID: {group_id}")
+        
         # 生成回复（包含读空气功能）
         if not self.response_engine:
             logger.warning("[群聊处理] response_engine未初始化，跳过处理")
+            # 清除读空气互斥标记
+            if group_id in self._air_reading_in_progress:
+                self._air_reading_in_progress.pop(group_id, None)
+                logger.debug(f"[读空气] 清除读空气互斥标记，群组ID: {group_id}")
             return
         response_result = await self.response_engine.generate_response(event, chat_context, willingness_result)
         
@@ -2556,6 +3316,11 @@ class GroupChatPluginEnhanced(Star):
         # 检查是否启用详细日志
         if self._is_detailed_logging():
             logger.debug(f"GroupChatPluginEnhanced: 详细日志 - 交互状态已更新，消息处理完成")
+        
+        # 清除读空气主动对话互斥标记
+        if group_id in self._air_reading_in_progress:
+            self._air_reading_in_progress.pop(group_id, None)
+            logger.debug(f"[读空气] 清除读空气互斥标记，群组ID: {group_id}")
 
     # 读空气功能：处理LLM回复，进行文本过滤
     @filter.on_llm_response()
@@ -2714,3 +3479,113 @@ class GroupChatPluginEnhanced(Star):
         if self.state_manager:
             self.state_manager.clear_all_state()
         logger.info("增强版群聊插件已终止")
+
+    # 搜索适配机制：工具错误处理
+    async def _handle_tool_call_error(self, tool_name: str, error: Exception, event: AstrMessageEvent = None) -> str:
+        """处理工具调用错误，适配平台搜索配置
+        
+        Args:
+            tool_name: 工具名称
+            error: 错误对象
+            event: 消息事件对象（可选）
+            
+        Returns:
+            友好的错误提示信息
+        """
+        error_msg = str(error)
+        logger.error(f"[工具错误] 工具调用失败: {tool_name} - {error_msg}")
+        
+        # 关键改进：动态适配平台搜索配置
+        # 检查是否是搜索相关的错误
+        if "Tavily" in error_msg or "API key" in error_msg.lower() or "websearch" in error_msg.lower():
+            # 获取平台配置的搜索提供商信息
+            try:
+                cfg = self.context.get_config()
+                prov_settings = cfg.get("provider_settings", {})
+                websearch_enable = prov_settings.get("web_search", False)
+                provider = prov_settings.get("websearch_provider", "default")
+                
+                # 根据平台配置提供相应的错误提示
+                if not websearch_enable:
+                    return "搜索功能未在AstrBot平台中启用。请在平台设置中启用搜索功能。"
+                elif provider == "tavily" and "API key" in error_msg.lower():
+                    return "Tavily搜索需要配置API密钥。请在AstrBot平台设置中配置websearch_tavily_key。"
+                elif provider == "baidu_ai_search" and "API key" in error_msg.lower():
+                    return "百度AI搜索需要配置API密钥。请在AstrBot平台设置中配置websearch_baidu_app_builder_key。"
+                else:
+                    return f"搜索工具执行失败: {error_msg}"
+            except Exception as config_error:
+                logger.warning(f"[搜索适配] 获取平台配置失败: {config_error}")
+                return f"搜索工具执行失败: {error_msg}"
+        
+        # 其他类型的错误
+        return f"工具执行失败: {error_msg}"
+
+    # 搜索适配机制：格式化工具提示时添加搜索适配说明
+    def _format_tools_prompt_with_search_adapter(self, tools_info: Dict[str, Any]) -> str:
+        """格式化工具信息为AI可理解的提示词，包含搜索适配说明"""
+        if not tools_info or tools_info.get("total_count", 0) == 0:
+            return ""
+        
+        prompt_parts = ["\n\n=== AstrBot平台可用工具 ==="]
+        
+        # 添加搜索适配说明
+        search_config = tools_info.get("platform_search_config", {})
+        if search_config.get("has_search_config", False):
+            websearch_enable = search_config.get("websearch_enable", False)
+            provider = search_config.get("websearch_provider", "default")
+            
+            if websearch_enable:
+                provider_names = {
+                    "default": "默认搜索引擎",
+                    "tavily": "Tavily搜索引擎",
+                    "baidu_ai_search": "百度AI搜索"
+                }
+                provider_name = provider_names.get(provider, provider)
+                prompt_parts.append(f"🔍 搜索功能: 已启用 ({provider_name})")
+            else:
+                prompt_parts.append("🔍 搜索功能: 未启用")
+        else:
+            prompt_parts.append("🔍 搜索功能: 平台配置未知")
+        
+        prompt_parts.append("")
+        
+        # 官方工具
+        official_tools = tools_info.get("official_tools", [])
+        if official_tools:
+            prompt_parts.append("📋 官方工具:")
+            for tool in official_tools:
+                prompt_parts.append(f"🔧 {tool['name']}: {tool['description']}")
+                if tool.get('parameters') and tool['parameters'].get('properties'):
+                    params = tool['parameters']['properties']
+                    if params:
+                        param_desc = ", ".join([f"{name}({param.get('type', 'unknown')})" for name, param in params.items()])
+                        prompt_parts.append(f"   参数: {param_desc}")
+        
+        # 插件工具
+        plugin_tools = tools_info.get("plugin_tools", [])
+        if plugin_tools:
+            prompt_parts.append("\n🔌 插件工具:")
+            for tool in plugin_tools:
+                prompt_parts.append(f"⚡ {tool['name']}: {tool['description']}")
+                if tool.get('parameters') and tool['parameters'].get('properties'):
+                    params = tool['parameters']['properties']
+                    if params:
+                        param_desc = ", ".join([f"{name}({param.get('type', 'unknown')})" for name, param in params.items()])
+                        prompt_parts.append(f"   参数: {param_desc}")
+        
+        # 使用说明
+        prompt_parts.append("\n💡 使用说明:")
+        prompt_parts.append("- 你可以直接调用这些工具来完成任务")
+        prompt_parts.append("- 工具调用会自动执行，无需手动操作")
+        prompt_parts.append("- 优先使用官方工具，插件工具可能有额外依赖")
+        
+        # 搜索适配说明
+        prompt_parts.append("\n🔍 搜索适配说明:")
+        prompt_parts.append("- 搜索功能会自动适配AstrBot平台的配置")
+        prompt_parts.append("- 如果部分搜索工具失败，系统会尝试其他可用工具")
+        prompt_parts.append("- 当搜索工具部分成功时，请明确告知用户确实搜到了一些内容")
+        prompt_parts.append("- 即使某个搜索方法失败，也不代表完全没有搜索结果")
+        prompt_parts.append("- 优先使用可用的搜索工具，失败的工具会自动跳过")
+        
+        return "\n".join(prompt_parts)

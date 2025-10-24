@@ -3,11 +3,11 @@
 
 负责决定是否回复以及生成回复内容，包括传统的阈值判断和基于LLM的"读空气"判断。
 
-版本: 2.0.3
+版本: V2.0.4
 作者: Him666233
 """
 
-__version__ = "2.0.3"
+__version__ = "V2.0.4"
 __author__ = "Him666233"
 __description__ = "回复引擎模块：负责决定是否回复以及生成回复内容"
 
@@ -202,12 +202,39 @@ class ResponseEngine:
 
     def _compose_system_prompt_with_persona(self, base_prompt: str, persona: Dict[str, Any]) -> str:
         """
-        将人格前缀与基础 system prompt 组合。
+        将人格前缀与基础 system prompt 组合，并添加自定义系统提示词。
         """
+        # 组合人格提示词
         if persona and persona.get("enabled") and persona.get("persona_prompt"):
             name = persona.get("persona_name", "")
             preface = f"【人格设定：{name}】\n{persona.get('persona_prompt','')}\n\n"
-            return preface + base_prompt
+            base_prompt = preface + base_prompt
+        
+        # 添加自定义系统提示词
+        if isinstance(self.config, dict):
+            system_prompt_config = self.config.get("system_prompt", {})
+            enable_system_prompt = system_prompt_config.get("enable_system_prompt", False)
+            custom_prompt = system_prompt_config.get("custom_prompt", "").strip()
+            
+            # 详细日志：系统提示词功能状态
+            if self._is_detailed_logging():
+                logger.debug(f"ResponseEngine: 详细日志 - 系统提示词功能状态: 启用={enable_system_prompt}")
+                if enable_system_prompt:
+                    logger.debug(f"ResponseEngine: 详细日志 - 自定义提示词长度: {len(custom_prompt)} 字符")
+                    logger.debug(f"ResponseEngine: 详细日志 - 自定义提示词预览: {custom_prompt[:100]}...")
+            
+            if enable_system_prompt and custom_prompt:
+                # 在基础提示词后添加自定义提示词
+                base_prompt += f"\n\n【自定义系统提示词】\n{custom_prompt}"
+                
+                # 详细日志：系统提示词已应用
+                if self._is_detailed_logging():
+                    logger.debug(f"ResponseEngine: 详细日志 - 已应用自定义系统提示词到基础提示词")
+            else:
+                # 详细日志：系统提示词未应用
+                if self._is_detailed_logging():
+                    logger.debug(f"ResponseEngine: 详细日志 - 未应用自定义系统提示词")
+        
         return base_prompt
 
     async def _generate_with_air_reading(self, event: Any, chat_context: Dict[str, Any], willingness_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -238,24 +265,22 @@ class ResponseEngine:
         if self._is_detailed_logging():
             logger.debug(f"ResponseEngine: 详细日志 - LLM读空气原始响应: {llm_response}")
         
-        # 检查LLM的回复是否是"不回复"的标记
-        no_reply_marker = "[DO_NOT_REPLY]"
+        # 优化版本：直接处理LLM响应，不再使用复杂的标记处理
+        response_text = llm_response.strip()
         
-        # 清理响应内容，去除标记
-        cleaned_response = llm_response.strip()
-        
-        if no_reply_marker in cleaned_response:
+        # 检查是否是不回复标记
+        if "[DO_NOT_REPLY]" in response_text:
             logger.info(f"ResponseEngine: LLM决定跳过回复。")
             
             # 检查是否启用详细日志
             if self._is_detailed_logging():
-                logger.debug(f"ResponseEngine: 详细日志 - 检测到不回复标记，清理后内容: {cleaned_response.replace(no_reply_marker, '').strip()}")
+                logger.debug(f"ResponseEngine: 详细日志 - 检测到不回复标记")
             
             return {
                 "should_reply": False,
                 "content": None,
                 "decision_method": "air_reading",
-                "llm_response": cleaned_response.replace(no_reply_marker, "").strip(),
+                "llm_response": response_text,
                 "skip_reason": "LLM decided to skip",
                 "willingness_score": willingness_result.get("willingness_score")
             }
@@ -264,14 +289,14 @@ class ResponseEngine:
             
             # 检查是否启用详细日志
             if self._is_detailed_logging():
-                logger.debug(f"ResponseEngine: 详细日志 - LLM决定回复，内容长度: {len(cleaned_response)}")
+                logger.debug(f"ResponseEngine: 详细日志 - LLM决定回复，内容长度: {len(response_text)}")
             
             # LLM的回复就是直接要发送的内容
             return {
                 "should_reply": True,
-                "content": cleaned_response,
+                "content": response_text,
                 "decision_method": "air_reading",
-                "llm_response": cleaned_response,
+                "llm_response": response_text,
                 "willingness_score": willingness_result.get("willingness_score")
             }
     
@@ -319,7 +344,7 @@ class ResponseEngine:
         memories_str = "\n".join([f"- {mem.get('content', '')}" for mem in relevant_memories[:3]]) if relevant_memories else "无相关记忆。"
         history_str = "\n".join([f"{msg.get('role', '')}: {msg.get('content', '')}" for msg in conversation_history[-3:]]) if conversation_history else "无最近对话。"
 
-        # 构建提示
+        # 构建优化的提示词
         prompt = f"""你是一个拟人化的聊天助手，需要判断是否应该回复以下消息。你的任务是"读空气"，即根据上下文判断当前聊天氛围是否适合回复。
 
 【当前消息】
@@ -348,7 +373,7 @@ class ResponseEngine:
 **如果你认为不应该回复**，请只回复以下标记，不要添加任何其他文字或解释：
 [DO_NOT_REPLY]
 
-**如果你认为应该回复**，请直接给出你自然、友好的回复内容。
+**如果你认为应该回复**，请直接给出你自然、友好的回复内容，不要使用任何特殊格式或标记。
 
 **判断和回复时请综合考虑以下因素：**
 1.  **相关性**：消息是否直接与你相关，或是在与你对话？

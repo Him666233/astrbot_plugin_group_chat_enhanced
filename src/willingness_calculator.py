@@ -3,11 +3,11 @@
 
 负责计算回复意愿，包括基础概率、印象分、群活跃度、连续奖励、疲劳惩罚等因素的综合计算。
 
-版本: 2.0.3
+版本: V2.0.4
 作者: Him666233
 """
 
-__version__ = "2.0.3"
+__version__ = "V2.0.4"
 __author__ = "Him666233"
 __description__ = "意愿计算器模块：负责计算回复意愿"
 
@@ -82,14 +82,28 @@ class WillingnessCalculator:
                        f"疲劳惩罚: {fatigue_penalty:.3f}, 重复惩罚: {duplicate_penalty:.3f}, "
                        f"动态阈值: {dynamic_threshold:.3f}")
 
-        # 综合计算基础意愿值（应用重复消息惩罚）
+        # 优化版本：更智能的意愿计算算法
+        # 1. 基础意愿计算（更平衡的权重分配）
+        base_willingness = (
+            base_probability * 0.25 +      # 基础概率权重降低
+            impression_score * 0.35 +      # 用户印象权重提高
+            group_activity * 0.25 +        # 群活跃度权重提高
+            continuity_bonus * 0.15        # 连续性奖励权重提高
+        )
+        
+        # 2. 应用惩罚因子（使用乘法而非减法，更符合实际场景）
+        penalty_factor = max(0.1, 1.0 - fatigue_penalty - duplicate_penalty)
+        calculated_willingness = base_willingness * penalty_factor
+        
+        # 3. 智能调整：根据消息类型和上下文动态调整
+        message_type_bonus = self._calculate_message_type_bonus(event, chat_context)
+        context_relevance_bonus = self._calculate_context_relevance_bonus(event, chat_context)
+        
+        # 4. 最终意愿值计算
         calculated_willingness = (
-            base_probability * 0.3 +
-            impression_score * 0.4 +
-            group_activity * 0.2 +
-            continuity_bonus * 0.1 -
-            fatigue_penalty -
-            duplicate_penalty
+            calculated_willingness * 0.7 +  # 基础意愿占70%
+            message_type_bonus * 0.2 +      # 消息类型奖励占20%
+            context_relevance_bonus * 0.1   # 上下文相关性奖励占10%
         )
 
         final_willingness = max(0.0, min(1.0, calculated_willingness))
@@ -191,6 +205,79 @@ class WillingnessCalculator:
         )
 
         return min(1.0, max(0.0, final_activity))
+    
+    def _calculate_message_type_bonus(self, event: Any, chat_context: Dict) -> float:
+        """计算消息类型奖励，提升对特定类型消息的回复意愿"""
+        message_content = event.message_str.lower()
+        bonus = 0.0
+        
+        # 1. 直接@消息（最高优先级）
+        if "@" in message_content:
+            bonus += 0.4
+        
+        # 2. 问题类消息
+        question_indicators = ["？", "?", "什么", "怎么", "为什么", "如何", "哪里", "什么时候", "谁"]
+        if any(indicator in message_content for indicator in question_indicators):
+            bonus += 0.3
+        
+        # 3. 情感表达类消息
+        emotion_indicators = ["谢谢", "感谢", "哈哈", "😂", "😊", "👍", "❤️", "太棒了", "厉害"]
+        if any(indicator in message_content for indicator in emotion_indicators):
+            bonus += 0.2
+        
+        # 4. 求助类消息
+        help_indicators = ["帮", "求助", "不会", "不懂", "请教", "指导", "建议"]
+        if any(indicator in message_content for indicator in help_indicators):
+            bonus += 0.25
+        
+        # 5. 分享类消息
+        share_indicators = ["分享", "推荐", "发现", "看到", "听说", "觉得"]
+        if any(indicator in message_content for indicator in share_indicators):
+            bonus += 0.15
+        
+        # 6. 负面情绪检测（降低回复意愿）
+        negative_indicators = ["烦", "讨厌", "生气", "愤怒", "失望", "难过", "😠", "😢"]
+        if any(indicator in message_content for indicator in negative_indicators):
+            bonus -= 0.2
+        
+        return max(-0.3, min(0.5, bonus))  # 限制在-0.3到0.5之间
+    
+    def _calculate_context_relevance_bonus(self, event: Any, chat_context: Dict) -> float:
+        """计算上下文相关性奖励，提升对相关话题的回复意愿"""
+        current_message = event.message_str.lower()
+        conversation_history = chat_context.get("conversation_history", [])
+        
+        if not conversation_history:
+            return 0.0
+        
+        # 获取最近的消息内容
+        recent_messages = []
+        current_time = time.time()
+        for msg in conversation_history[-10:]:  # 最近10条消息
+            if current_time - msg.get("timestamp", 0) < 1800:  # 30分钟内
+                content = msg.get("content", "").lower()
+                if content:
+                    recent_messages.append(content)
+        
+        if not recent_messages:
+            return 0.0
+        
+        # 计算关键词重叠度
+        current_words = set(re.findall(r'\w+', current_message))
+        relevance_score = 0.0
+        
+        for msg_content in recent_messages:
+            msg_words = set(re.findall(r'\w+', msg_content))
+            if current_words and msg_words:
+                # 计算词汇重叠度
+                overlap = len(current_words & msg_words) / len(current_words | msg_words)
+                relevance_score += overlap
+        
+        # 平均相关性分数
+        avg_relevance = relevance_score / len(recent_messages) if recent_messages else 0.0
+        
+        # 转换为奖励值（0-0.3之间）
+        return min(0.3, avg_relevance * 0.5)
 
     def _assess_message_quality(self, conversation_history: list, current_time: float) -> float:
         """评估消息质量"""
@@ -409,10 +496,9 @@ class WillingnessCalculator:
         return penalty
 
     def _calculate_dynamic_threshold(self, event: Any, chat_context: Dict, base_threshold: float) -> float:
-        """计算动态阈值（心流节奏融入）"""
+        """计算动态阈值（优化版本：更智能的心流节奏）"""
         group_id = event.get_group_id()
         if not group_id:
-            # 详细日志：无群组ID，返回基础阈值
             if self._is_detailed_logging():
                 logger.debug(f"[意愿计算器] 动态阈值计算 - 无群组ID，返回基础阈值: {base_threshold:.3f}")
             return base_threshold
@@ -422,14 +508,14 @@ class WillingnessCalculator:
         current_time = time.time()
         conversation_history = chat_context.get("conversation_history", [])
 
-        # 基础冷却时间（45秒）
-        cooldown = 45.0
-
-        # 根据活跃度调整冷却时间（活跃时适当缩短）
+        # 智能冷却时间计算
+        base_cooldown = 30.0  # 基础冷却时间缩短到30秒
+        
+        # 根据群活跃度动态调整冷却时间
         recent_count = sum(1 for msg in conversation_history
                           if current_time - msg.get("timestamp", 0) < 60)
-        activity_factor = min(1.0, recent_count / 5.0)  # 每分钟最多5条消息为基准
-        cooldown = cooldown * (1.0 - 0.3 * activity_factor)
+        activity_factor = min(1.0, recent_count / 3.0)  # 每分钟最多3条消息为基准
+        cooldown = base_cooldown * (1.0 - 0.4 * activity_factor)  # 活跃时冷却时间减少40%
 
         # 详细日志：动态阈值计算参数
         if self._is_detailed_logging():
@@ -443,36 +529,63 @@ class WillingnessCalculator:
         dt = current_time - state.get("last_reply_ts", 0)
         if dt < cooldown:
             # 距离上次回复太近，提高阈值（减少回复概率）
-            time_penalty = (cooldown - dt) / cooldown * 0.2
-            result = min(0.9, base_threshold + time_penalty)
-            # 详细日志：时间间隔惩罚
+            time_penalty = (cooldown - dt) / cooldown * 0.15  # 减少惩罚强度
+            result = min(0.85, base_threshold + time_penalty)
             if self._is_detailed_logging():
                 logger.debug(f"[意愿计算器] 动态阈值计算 - 时间间隔惩罚: {result:.3f}")
             return result
 
-        # @提及降低阈值
+        # @提及大幅降低阈值（提高回复概率）
         if self._hf_is_at_me(event):
-            result = max(0.1, base_threshold - 0.1)
-            # 详细日志：@提及降低阈值
+            result = max(0.05, base_threshold - 0.15)  # 更大幅度的降低
             if self._is_detailed_logging():
                 logger.debug(f"[意愿计算器] 动态阈值计算 - @提及降低阈值: {result:.3f}")
             return result
 
-        # 连续回复数提高阈值
+        # 连续回复数适度提高阈值
         streak = state.get("streak", 0)
         if streak > 0:
-            streak_penalty = min(0.2, streak * 0.05)
-            result = min(0.9, base_threshold + streak_penalty)
-            # 详细日志：连续回复惩罚
+            streak_penalty = min(0.15, streak * 0.03)  # 减少连续回复惩罚
+            result = min(0.85, base_threshold + streak_penalty)
             if self._is_detailed_logging():
                 logger.debug(f"[意愿计算器] 动态阈值计算 - 连续回复惩罚: {result:.3f}")
             return result
 
-        # 详细日志：返回基础阈值
-        if self._is_detailed_logging():
-            logger.debug(f"[意愿计算器] 动态阈值计算 - 返回基础阈值: {base_threshold:.3f}")
+        # 智能调整：根据消息类型微调阈值
+        message_type_adjustment = self._calculate_message_type_threshold_adjustment(event)
+        result = max(0.1, min(0.9, base_threshold + message_type_adjustment))
         
-        return base_threshold
+        if self._is_detailed_logging():
+            logger.debug(f"[意愿计算器] 动态阈值计算 - 消息类型调整: {message_type_adjustment:.3f}, 最终阈值: {result:.3f}")
+        
+        return result
+    
+    def _calculate_message_type_threshold_adjustment(self, event: Any) -> float:
+        """根据消息类型调整阈值"""
+        message_content = event.message_str.lower()
+        adjustment = 0.0
+        
+        # 问题类消息降低阈值（更容易回复）
+        question_indicators = ["？", "?", "什么", "怎么", "为什么", "如何", "哪里", "什么时候", "谁"]
+        if any(indicator in message_content for indicator in question_indicators):
+            adjustment -= 0.1
+        
+        # 求助类消息降低阈值
+        help_indicators = ["帮", "求助", "不会", "不懂", "请教", "指导", "建议"]
+        if any(indicator in message_content for indicator in help_indicators):
+            adjustment -= 0.08
+        
+        # 情感表达类消息适度降低阈值
+        emotion_indicators = ["谢谢", "感谢", "哈哈", "😂", "😊", "👍", "❤️"]
+        if any(indicator in message_content for indicator in emotion_indicators):
+            adjustment -= 0.05
+        
+        # 负面情绪消息提高阈值（减少回复）
+        negative_indicators = ["烦", "讨厌", "生气", "愤怒", "失望", "难过", "😠", "😢"]
+        if any(indicator in message_content for indicator in negative_indicators):
+            adjustment += 0.1
+        
+        return max(-0.15, min(0.15, adjustment))  # 限制调整范围
 
     # 心流算法相关方法
     def _hf_get_state(self, group_id: str) -> Dict:

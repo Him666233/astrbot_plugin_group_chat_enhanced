@@ -247,5 +247,94 @@
         "default": false
       }
     }
+  },
+  "timestamp_display": {
+    "description": "时间戳显示配置",
+    "type": "object",
+    "hint": "配置是否在消息前显示时间戳信息。",
+    "items": {
+      "enable_timestamp": {
+        "type": "bool",
+        "description": "启用时间戳显示",
+        "hint": "开启后会在每条消息前显示发送时间。",
+        "default": false
+      }
+    }
+  },
+  "system_prompt": {
+    "description": "系统提示词配置",
+    "type": "object",
+    "hint": "配置额外的系统提示词，让AI更好地遵守规则。",
+    "items": {
+      "enable_system_prompt": {
+        "type": "bool",
+        "description": "启用系统提示词",
+        "hint": "开启后会在AI调用前添加额外的系统提示词。",
+        "default": false
+      },
+      "custom_prompt": {
+        "type": "string",
+        "description": "自定义系统提示词",
+        "hint": "输入你想要AI遵守的额外规则和提示词。留空则不启用此功能。",
+        "default": ""
+      }
+    }
+  },
+  "message_cleanup": {
+    "description": "消息清理配置",
+    "type": "object",
+    "hint": "配置聊天记录自动清理功能，防止本地存储占用过大。",
+    "items": {
+      "enable_cleanup": {
+        "type": "bool",
+        "description": "启用消息清理功能",
+        "hint": "开启后会自动清理超出限制的聊天记录。",
+        "default": false
+      },
+      "target_groups": {
+        "type": "list",
+        "description": "目标群组列表",
+        "hint": "指定要启用清理功能的群组ID列表。留空则对所有群聊生效。",
+        "default": []
+      },
+      "max_messages": {
+        "type": "int",
+        "description": "最大消息条数限制",
+        "hint": "当本地保存的聊天记录超过此条数时，自动删除最旧的消息。",
+        "default": 1000
+      }
+    }
+  },
+  "tool_prompt": {
+    "type": "object",
+    "description": "工具提示配置",
+    "hint": "配置机器人工具识别和提示功能，让机器人了解现有的可用的工具(官方的，第三方插件的都支持)并智能调用。",
+    "items": {
+      "enable_tool_prompt": {
+        "type": "bool",
+        "description": "启用工具提示功能",
+        "hint": "开启后会在机器人调用前自动添加可用工具列表提示词，让机器人了解可调用的工具。启用后机器人可以智能调用平台提供的各种功能工具。",
+        "default": false
+      },
+      "enable_auto_mention": {
+        "type": "bool",
+        "description": "启用自动提及机制",
+        "hint": "开启后会在首次交互或长时间未使用工具时自动触发工具提示。包括：1) 首次与用户交互时自动介绍可用工具；2) 超过配置时间间隔后再次提醒可用工具。",
+        "default": false
+      },
+      "enable_keyword_trigger": {
+        "type": "bool",
+        "description": "启用关键词触发机制",
+        "hint": "开启后当用户消息包含工具相关关键词时自动触发工具提示。支持的关键词包括：工具、功能、能做什么、能力、function、tool、capability、help、帮助等。",
+        "default": false
+      },
+      "mention_interval": {
+        "type": "int",
+        "description": "自动提及间隔时间（秒）",
+        "hint": "设置自动提及工具的时间间隔，单位为秒。默认3600秒（1小时），表示如果超过1小时未提及工具，会再次自动提醒可用工具。",
+        "default": 3600
+      }
+    }
   }
 }
+  
