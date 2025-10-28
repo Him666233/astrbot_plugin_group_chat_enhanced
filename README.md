@@ -1,3 +1,7 @@
+# 本插件因原插件astrbot_plugin_group_chat 和 astrbot_plugin_reply_directly插件的逻辑漏洞过于严重，因此放弃维护。想要群聊增强效果插件的，请转至全新增强逻辑的新插件：
+- 项目名称：astrbot_plugin_group_chat_plus
+- 项目仓库地址：https://github.com/Him666233/astrbot_plugin_group_chat_plus
+
 # AstrBot 群聊增强版插件 (astrbot_plugin_group_chat_enhanced)
 
 > **二次创作版本** - 基于astrbot_plugin_group_chat 和 astrbot_plugin_reply_directly插件进行功能增强
